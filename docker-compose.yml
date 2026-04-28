@@ -1,0 +1,74 @@
+version: "3.9"
+
+# System 2: AI Document Intelligence
+# Runs on different ports from System 1 to avoid conflicts during local dev:
+#   API:     localhost:8001  (System 1 = 8000)
+#   DB:      localhost:5433  (System 1 = 5432)
+#   n8n:     localhost:5679  (System 1 = 5678)
+#
+# Start: docker compose up --build
+# Stop:  docker compose down
+
+services:
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: docai_api
+    ports:
+      - "8001:8000"
+    environment:
+      - DATABASE_URL=postgresql://docai:docai@db:5432/docai
+      - LOG_LEVEL=INFO
+      - UPLOAD_DIR=/app/data/raw
+      - CORS_ORIGINS=http://localhost:3000,http://localhost:5679
+      - MAX_FILE_SIZE_MB=50
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data         # persist uploaded PDFs
+      - ./logs:/app/logs
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    container_name: docai_db
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: docai
+      POSTGRES_USER: docai
+      POSTGRES_PASSWORD: docai
+    volumes:
+      - docai_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U docai -d docai"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: docai_n8n
+    ports:
+      - "5679:5678"
+    environment:
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=admin
+      - N8N_BASIC_AUTH_PASSWORD=admin
+      - WEBHOOK_URL=http://localhost:5679
+    volumes:
+      - docai_n8n_data:/home/node/.n8n
+      - ./workflows:/workflows
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  docai_postgres_data:
+  docai_n8n_data:

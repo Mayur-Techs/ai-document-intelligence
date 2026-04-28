@@ -1,0 +1,227 @@
+{
+  "name": "Doc Intelligence — Google Drive Pipeline v1",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [{"mode": "everyMinute"}]
+        },
+        "triggerOn": "specificFolder",
+        "folderToWatch": {
+          "__rl": true,
+          "value": "={{$env.GOOGLE_DRIVE_FOLDER_ID}}",
+          "mode": "id"
+        },
+        "event": "fileCreated",
+        "options": {}
+      },
+      "id": "node-1-gdrive-trigger",
+      "name": "Google Drive: New File",
+      "type": "n8n-nodes-base.googleDriveTrigger",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "notes": "Watches for new files in the configured Google Drive folder.\nSet GOOGLE_DRIVE_FOLDER_ID in n8n environment variables.\nPDF dropped here → pipeline triggers automatically."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.mimeType}}",
+              "operation": "equals",
+              "value2": "application/pdf"
+            }
+          ]
+        }
+      },
+      "id": "node-2-is-pdf",
+      "name": "Is PDF?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [460, 300],
+      "notes": "Only process PDFs. Other file types (images, docs) are ignored."
+    },
+    {
+      "parameters": {
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "value": "={{$json.id}}",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "node-3-download",
+      "name": "Download PDF",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [680, 260],
+      "notes": "Download binary content of the PDF from Google Drive."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://api:8000/api/v1/documents/upload",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {"name": "document_type", "value": "invoice"}
+          ]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "data"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {"neverError": false}
+          }
+        }
+      },
+      "id": "node-4-upload",
+      "name": "Upload to API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [900, 260],
+      "notes": "POST PDF to /documents/upload.\nReturns 202 immediately with document_id.\nExtraction runs in background."
+    },
+    {
+      "parameters": {
+        "amount": 20,
+        "unit": "seconds"
+      },
+      "id": "node-5-wait",
+      "name": "Wait 20s",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [1120, 260],
+      "notes": "Wait for background extraction to complete.\nMost invoices process in 5-15 seconds.\n20 seconds covers Claude API latency + processing."
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=http://api:8000/api/v1/documents/{{$node[\"Upload to API\"].json.document_id}}",
+        "options": {}
+      },
+      "id": "node-6-get-result",
+      "name": "Get Extracted Data",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1340, 260],
+      "notes": "Fetch complete document with all extracted fields.\nIf status=processing, could add a retry loop here."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.status}}",
+              "operation": "equals",
+              "value2": "completed"
+            }
+          ]
+        }
+      },
+      "id": "node-7-completed-check",
+      "name": "Extraction Completed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1560, 260],
+      "notes": "Branch: completed → format and notify\nBranch: failed/processing → log error"
+    },
+    {
+      "parameters": {
+        "jsCode": "const doc = $input.first().json;\nconst confidence = doc.ai_confidence ? Math.round(doc.ai_confidence * 100) : 'N/A';\nconst total = doc.total_amount \n  ? new Intl.NumberFormat('en-IN', {style:'currency',currency:doc.currency||'INR'}).format(doc.total_amount)\n  : 'Not extracted';\n\nreturn [{\n  json: {\n    slack_message: [\n      `📄 *Invoice Processed* — ${doc.file_name}`,\n      ``,\n      `*Vendor:* ${doc.vendor_name || 'Unknown'}`,\n      `*Invoice #:* ${doc.invoice_number || 'Unknown'}`,\n      `*Date:* ${doc.invoice_date || 'Unknown'}`,\n      `*Due:* ${doc.due_date || 'Unknown'}`,\n      `*Total:* ${total}`,\n      `*AI Confidence:* ${confidence}%`,\n      ``,\n      `🔗 View full extraction: http://localhost:8001/docs#/documents/get_document_api_v1_documents__document_id__get`,\n      `📊 Document ID: ${doc.id}`,\n    ].join('\\n'),\n    document_id: doc.id,\n    vendor_name: doc.vendor_name,\n    total_amount: doc.total_amount,\n  }\n}];"
+      },
+      "id": "node-8-format",
+      "name": "Format Slack Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1780, 220],
+      "notes": "Build a clean Slack message with key invoice fields.\nAI confidence score tells the reviewer how much to trust the extraction."
+    },
+    {
+      "parameters": {
+        "authentication": "webhook",
+        "webhookUri": "={{$env.SLACK_WEBHOOK_URL}}",
+        "text": "={{$json.slack_message}}",
+        "options": {}
+      },
+      "id": "node-9-slack",
+      "name": "Slack Notification",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [2000, 220],
+      "notes": "Send formatted extraction result to Slack.\nSet SLACK_WEBHOOK_URL in n8n environment.\nThis is the end-to-end: file dropped → Slack notified."
+    },
+    {
+      "parameters": {
+        "jsCode": "const doc = $input.first().json;\nconsole.error(`[DocAI] Extraction FAILED for document ${doc.id} (${doc.file_name}): ${doc.error_message}`);\nreturn [{json: {status: 'logged', document_id: doc.id, error: doc.error_message}}];"
+      },
+      "id": "node-10-log-error",
+      "name": "Log Extraction Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1780, 340],
+      "notes": "Log failed extractions for debugging.\nIn production: send to error tracking (Sentry) or dead-letter queue."
+    },
+    {
+      "parameters": {
+        "jsCode": "const file = $input.first().json;\nconsole.log(`[DocAI] Skipping non-PDF: ${file.name} (${file.mimeType})`);\nreturn [{json: {skipped: true, file: file.name}}];"
+      },
+      "id": "node-11-skip",
+      "name": "Skip Non-PDF",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 380],
+      "notes": "Non-PDF files are silently skipped with a log entry."
+    }
+  ],
+  "connections": {
+    "Google Drive: New File": {
+      "main": [[{"node": "Is PDF?", "type": "main", "index": 0}]]
+    },
+    "Is PDF?": {
+      "main": [
+        [{"node": "Download PDF", "type": "main", "index": 0}],
+        [{"node": "Skip Non-PDF", "type": "main", "index": 0}]
+      ]
+    },
+    "Download PDF": {
+      "main": [[{"node": "Upload to API", "type": "main", "index": 0}]]
+    },
+    "Upload to API": {
+      "main": [[{"node": "Wait 20s", "type": "main", "index": 0}]]
+    },
+    "Wait 20s": {
+      "main": [[{"node": "Get Extracted Data", "type": "main", "index": 0}]]
+    },
+    "Get Extracted Data": {
+      "main": [[{"node": "Extraction Completed?", "type": "main", "index": 0}]]
+    },
+    "Extraction Completed?": {
+      "main": [
+        [{"node": "Format Slack Message", "type": "main", "index": 0}],
+        [{"node": "Log Extraction Error", "type": "main", "index": 0}]
+      ]
+    },
+    "Format Slack Message": {
+      "main": [[{"node": "Slack Notification", "type": "main", "index": 0}]]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": ""
+  },
+  "meta": {
+    "description": "Watches Google Drive folder for new PDFs. On new file: downloads, uploads to Doc Intelligence API, waits for Claude extraction, sends structured result to Slack. End-to-end: drop PDF in folder → Slack notification with vendor, invoice number, total amount."
+  }
+}

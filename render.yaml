@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: doc-intelligence-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: LOG_LEVEL
+        value: INFO
+      - key: DATABASE_URL
+        fromDatabase:
+          name: doc-intelligence-db
+          property: connectionString
+    autoDeploy: true
+
+databases:
+  - name: doc-intelligence-db
+    databaseName: docai
+    user: docai
+    plan: free
