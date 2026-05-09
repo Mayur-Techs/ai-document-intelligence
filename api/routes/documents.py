@@ -408,11 +408,14 @@ def verify_field(
     return field
 
 
-@router.delete("/{document_id}", status_code=204)
-def delete_document(document_id: int, db: Session = Depends(get_db_for_fastapi)) -> None:
-    """Delete document and all its extracted fields. Irreversible."""
+# FIXED
+from fastapi import Response  # add this to imports at top if not there
+
+@router.delete("/{document_id}", status_code=204, response_class=Response)
+def delete_document(document_id: int, db: Session = Depends(get_db_for_fastapi)):
     doc = db.query(Document).filter(Document.id == document_id).first()
     if not doc:
         raise HTTPException(status_code=404, detail=f"Document {document_id} not found")
     db.delete(doc)
     db.commit()
+    # return nothing — 204 No Content
