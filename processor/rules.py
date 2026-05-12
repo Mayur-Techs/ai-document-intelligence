@@ -47,7 +47,7 @@ _GSTIN = re.compile(r'\b(\d{2}[A-Z]{5}\d{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1})\b')
 
 # Invoice number — covers most Indian invoice formats
 _INV_NO = re.compile(
-    r'(?:invoice\s*(?:no|number|#|num)?\.?\s*[:–\-]?\s*)([A-Z0-9][A-Z0-9/\-]{2,25})',
+    r'(?:invoice\s*(?:no|number|#|num)\.?\s*[:–\-]\s*)([A-Z0-9][A-Z0-9/\-]{4,25})',
     re.IGNORECASE,
 )
 
@@ -84,7 +84,7 @@ _SUBTOTAL = re.compile(
 
 # GST — CGST + SGST or IGST
 _GST = re.compile(
-    r'(?:CGST|SGST|IGST|GST|tax)\s*[@\d\.%]*\s*[:–\-]?\s*(?:₹|Rs\.?|INR)?\s*([\d,]+(?:\.\d{1,2})?)',
+    r'(?:CGST|SGST|IGST)\s*@?\s*[\d\.]+\s*%\s*[:–\-]\s*(?:₹|Rs\.?)?\s*([\d,]+(?:\.\d{1,2})?)',
     re.IGNORECASE,
 )
 
@@ -264,10 +264,10 @@ def extract_from_tables(tables: list[list[list[str]]]) -> dict[str, Any]:
 # ── Private helpers ────────────────────────────────────────────────────────────
 
 def _parse_amount(raw: str) -> float:
-    """Convert '1,97,355.00' or '197355' to float."""
     if not raw:
         return 0.0
-    cleaned = re.sub(r"[₹Rs.,\s]", "", str(raw).strip(), flags=re.IGNORECASE)
+    cleaned = re.sub(r"[₹\s]|Rs\.?", "", str(raw).strip(), flags=re.IGNORECASE)
+    cleaned = cleaned.replace(",", "")   # remove commas separately — keeps "."
     try:
         return float(cleaned)
     except ValueError:
