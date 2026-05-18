@@ -1,217 +1,256 @@
 """
-extractor/pipeline.py — Document processing pipeline.
+extractor/pipeline.py
+─────────────────────
+The single entry point called by main.py and the API routes.
 
-NEW FLOW (replaces old direct-to-Claude approach):
+    from extractor.pipeline import process_document
+    await process_document(document_id)
 
-  Step 1: Parse PDF text + tables (parser/extractor.py)
-  Step 2: Rules extraction (processor/rules.py) — zero cost, instant
-  Step 3: If confidence >= 0.70 → DONE. No AI called.
-  Step 4: If confidence < 0.70 → Gemini Flash (free) fills MISSING FIELDS ONLY
-  Step 5: Merge rules result + AI result → write to DB
-
-WHY this order matters:
-  A standard Indian GST invoice has GSTIN (15-char regex), invoice number
-  (labelled field), total (labelled "Grand Total"), and date — all extractable
-  by rules. AI is only needed for vendor name (unstructured header text) and
-  line items (table structure varies). On a clean digital PDF, rules alone
-  achieve 70-90% confidence. AI call rate in practice: ~30% of documents.
+Flow:
+    1. Load document record from DB → get file path, page count, char count
+    2. Read PDF bytes from disk
+    3. Run smart extraction pipeline:
+         Primary  → Gemini 2.0 Flash  (free, fast)
+         Fallback → Gemini 1.5 Pro    (free, deeper — auto-triggered if
+                                       confidence < 0.80 or critical field is null)
+    4. Sanitize every extracted field (dates, amounts, GSTINs, etc.)
+    5. Write results back to DB:
+         → documents table      (vendor_name, invoice_number, total_amount …)
+         → extracted_fields table (one row per field + one row per line item)
 """
+
 from __future__ import annotations
 
+import json
 import logging
-from datetime import datetime, timezone
+import traceback
+from pathlib import Path
 
-from database.connection import SessionLocal
-from database.models import Document, ExtractedField, ProcessingStatus
-from parser.extractor import ExtractionResult, extract_text, extract_tables
-from processor.rules import (
-    RULES_CONFIDENCE_THRESHOLD,
-    RulesResult,
-    extract_from_tables,
-    extract_from_text,
-)
-from processor.llm import ExtractionOutput, extract_fields
+from database.connection import get_db
+from database.models import Document, ExtractedField
+from extractor.gemini_extractor import extract_primary, extract_fallback, needs_fallback
+from extractor.field_sanitizer import merge_best
 
-logger = logging.getLogger("docai.extractor.pipeline")
+logger = logging.getLogger("docai.pipeline")
 
+CONFIDENCE_THRESHOLD = 0.80
+
+
+# ─────────────────────────────────────────────────────────────
+#  DB helpers
+# ─────────────────────────────────────────────────────────────
+
+def _update_document(db, document_id: int, result: dict, status: str) -> None:
+    """Write top-level scalar fields back to the documents table."""
+    doc = db.query(Document).filter(Document.id == document_id).first()
+    if not doc:
+        logger.error("Document id=%d not found in DB", document_id)
+        return
+
+    doc.status          = status
+    doc.vendor_name     = result.get("vendor_name")
+    doc.invoice_number  = result.get("invoice_number")
+    doc.invoice_date    = result.get("invoice_date")
+    doc.due_date        = result.get("due_date")
+    doc.total_amount    = result.get("total_amount")
+    doc.currency        = result.get("currency") or "INR"
+    doc.ai_confidence   = result.get("ai_confidence", 0.0)
+    doc.error_message   = None
+    db.commit()
+    logger.info(
+        "Document id=%d updated → status=%s, confidence=%.2f",
+        document_id, status, doc.ai_confidence or 0,
+    )
+
+
+def _write_fields(db, document_id: int, result: dict) -> None:
+    """
+    Write all extracted fields to extracted_fields table.
+    Deletes old rows first so re-processing is always clean.
+    """
+    # Clear any previous extraction for this document
+    db.query(ExtractedField).filter(
+        ExtractedField.document_id == document_id
+    ).delete(synchronize_session=False)
+
+    confidence = result.get("ai_confidence", 0.0)
+
+    # All scalar fields — only write if value is not None
+    scalar_fields = [
+        ("vendor_name",          result.get("vendor_name"),          "string"),
+        ("vendor_gstin",         result.get("vendor_gstin"),         "string"),
+        ("buyer_name",           result.get("buyer_name"),           "string"),
+        ("buyer_gstin",          result.get("buyer_gstin"),          "string"),
+        ("invoice_number",       result.get("invoice_number"),       "string"),
+        ("invoice_date",         result.get("invoice_date"),         "string"),
+        ("due_date",             result.get("due_date"),             "string"),
+        ("currency",             result.get("currency"),             "string"),
+        ("subtotal",             result.get("subtotal"),             "number"),
+        ("tax_amount",           result.get("tax_amount"),           "number"),
+        ("total_amount",         result.get("total_amount"),         "number"),
+        ("bank_ifsc",            result.get("bank_ifsc"),            "string"),
+        ("bank_account_number",  result.get("bank_account_number"),  "string"),
+        ("bank_name",            result.get("bank_name"),            "string"),
+    ]
+
+    for field_name, field_value, field_type in scalar_fields:
+        if field_value is None:
+            continue
+        db.add(ExtractedField(
+            document_id=document_id,
+            field_name=field_name,
+            field_value=str(field_value),
+            field_type=field_type,
+            confidence=confidence,
+            is_verified=False,
+        ))
+
+    # Line items — one row each, value stored as JSON string
+    for idx, item in enumerate(result.get("line_items", []), start=1):
+        db.add(ExtractedField(
+            document_id=document_id,
+            field_name=f"line_items_{idx}",
+            field_value=json.dumps(item, ensure_ascii=False),
+            field_type="list_item",
+            confidence=confidence,
+            is_verified=False,
+        ))
+
+    db.commit()
+    logger.info(
+        "Wrote %d scalar fields + %d line items for document id=%d",
+        sum(1 for _, v, _ in scalar_fields if v is not None),
+        len(result.get("line_items", [])),
+        document_id,
+    )
+
+
+# ─────────────────────────────────────────────────────────────
+#  Main pipeline entry point  (called by main.py + API routes)
+# ─────────────────────────────────────────────────────────────
 
 async def process_document(document_id: int) -> None:
     """
-    Full extraction pipeline. Called as FastAPI BackgroundTask.
-    Never raises — all failures stored in DB.
+    Full extraction pipeline for one document.
+
+    Called as:  await process_document(document_id)
+
+    Raises no exceptions — all errors are caught and written to DB.
     """
-    db = SessionLocal()
-    try:
+    logger.info("Pipeline started for document id=%d", document_id)
+
+    # ── Load document from DB ────────────────────────────────
+    with get_db() as db:
         doc = db.query(Document).filter(Document.id == document_id).first()
         if not doc:
-            logger.error("Document %d not found", document_id)
+            logger.error("Document id=%d not found — aborting", document_id)
             return
 
-        # ── Step 1: Mark processing ────────────────────────────────────────────
-        doc.status = ProcessingStatus.PROCESSING.value
-        doc.processing_started_at = datetime.now(timezone.utc)
-        db.commit()
-        logger.info("Processing document %d: %s", document_id, doc.file_name)
+        file_path  = doc.file_path
+        page_count = doc.page_count or 1
+        char_count = doc.char_count or 0
 
-        # ── Step 2: Parse PDF ──────────────────────────────────────────────────
-        extraction: ExtractionResult = extract_text(doc.file_path)
-        if not extraction.success or not extraction.text.strip():
-            _fail(db, doc, extraction.error or "PDF text extraction returned empty")
-            return
-
-        doc.raw_text = extraction.text
-        doc.page_count = extraction.page_count
-        doc.char_count = len(extraction.text)
+        # Mark as processing immediately
+        doc.status = "processing"
         db.commit()
 
-        # ── Step 3: Extract tables (best structured data) ──────────────────────
-        tables = extract_tables(doc.file_path)
-        table_data = extract_from_tables(tables) if tables else {}
-        logger.info("Tables found: %d, fields from tables: %d",
-                    len(tables), len(table_data))
-
-        # ── Step 4: Rules extraction on raw text ───────────────────────────────
-        rules: RulesResult = extract_from_text(extraction.text)
-
-        # Merge table data into rules data (tables win for amounts/line_items)
-        merged_data = {**rules.data, **table_data}
-        rules.data = merged_data
-
-        # Recalculate missing fields after table merge
-        all_fields = ["invoice_number", "invoice_date", "due_date", "vendor_name",
-                      "buyer_name", "total_amount", "subtotal", "tax_amount",
-                      "currency", "vendor_gstin", "buyer_gstin", "line_items"]
-        rules.missing_fields = [f for f in all_fields if f not in rules.data]
-
-        # Recalculate confidence after merge
-        key_fields = ["invoice_number", "invoice_date", "vendor_name", "total_amount", "tax_amount"]
-        bonus_fields = ["vendor_gstin", "buyer_name", "subtotal", "due_date", "currency"]
-        key_score = sum(1 for f in key_fields if f in rules.data) / len(key_fields)
-        bonus_score = sum(1 for f in bonus_fields if f in rules.data) / len(bonus_fields)
-        rules.confidence = round(key_score * 0.75 + bonus_score * 0.25, 3)
-
-        logger.info(
-            "Rules extraction: confidence=%.0f%%, fields=%d, missing=%s",
-            rules.confidence * 100, len(rules.data), rules.missing_fields,
-        )
-
-        # ── Step 5: AI fallback — ONLY if rules confidence is low ─────────────
-        final_data = dict(rules.data)
-        ai_confidence: float | None = None
-        ai_tokens = 0
-
-        if rules.confidence >= RULES_CONFIDENCE_THRESHOLD:
-            # Rules extracted enough — skip AI entirely
-            logger.info(
-                "Rules confidence %.0f%% >= threshold %.0f%% — AI skipped, saving tokens",
-                rules.confidence * 100, RULES_CONFIDENCE_THRESHOLD * 100,
-            )
-            ai_confidence = rules.confidence
-
-        else:
-            # Ask AI only about the missing fields
-            logger.info(
-                "Rules confidence %.0f%% < threshold — calling Gemini for: %s",
-                rules.confidence * 100, rules.missing_fields,
-            )
-            ai_output: ExtractionOutput = await extract_fields(
-                text=extraction.text,
-                document_type=doc.document_type,
-                missing_fields=rules.missing_fields if rules.missing_fields else None,
-            )
-            ai_tokens = ai_output.tokens_used
-
-            if ai_output.success:
-                # Merge: rules data takes priority (it's more reliable for structured fields)
-                # AI fills in the gaps (vendor name, addresses, complex line items)
-                for key, value in ai_output.data.items():
-                    if key not in final_data or final_data[key] is None:
-                        final_data[key] = value
-                ai_confidence = ai_output.confidence
-            else:
-                logger.warning("AI extraction failed: %s — using rules result only", ai_output.error)
-                ai_confidence = rules.confidence
-
-        # ── Step 6: Write summary fields to Document row ───────────────────────
-        _apply_fields(doc, final_data, ai_confidence)
-        db.commit()
-
-        # ── Step 7: Write all fields to ExtractedField table ──────────────────
-        _write_fields(db, doc, final_data, ai_confidence)
-        db.commit()
-
-        # ── Step 8: Mark complete ──────────────────────────────────────────────
-        doc.status = ProcessingStatus.COMPLETED.value
-        doc.processing_completed_at = datetime.now(timezone.utc)
-        db.commit()
-
-        elapsed = (doc.processing_completed_at - doc.processing_started_at).total_seconds()
-        logger.info(
-            "Document %d done in %.1fs | vendor=%r total=%s confidence=%.0f%% | "
-            "rules=%d fields, AI tokens=%d",
-            document_id, elapsed, doc.vendor_name, doc.total_amount,
-            (doc.ai_confidence or 0) * 100, len(rules.data), ai_tokens,
-        )
-
-    except Exception as exc:
-        logger.exception("Unhandled error in pipeline for document %d", document_id)
-        try:
+    # ── Read PDF bytes from disk ─────────────────────────────
+    try:
+        pdf_bytes = Path(file_path).read_bytes()
+    except (FileNotFoundError, PermissionError) as exc:
+        logger.error("Cannot read PDF file %s: %s", file_path, exc)
+        with get_db() as db:
             doc = db.query(Document).filter(Document.id == document_id).first()
             if doc:
-                _fail(db, doc, f"Unhandled exception: {exc}")
-        except Exception:
-            pass
-    finally:
-        db.close()
+                doc.status = "failed"
+                doc.error_message = f"File not found: {file_path}"
+                db.commit()
+        return
 
+    # ── Stage 1: Primary extraction (Gemini Flash, free) ─────
+    final_result = None
+    used_fallback = False
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
+    try:
+        primary_result = extract_primary(
+            pdf_bytes=pdf_bytes,
+            page_count=page_count,
+            char_count=char_count,
+        )
+        logger.info(
+            "Primary extraction done — confidence=%.2f",
+            (primary_result or {}).get("ai_confidence", 0),
+        )
 
-def _fail(db, doc: Document, error: str) -> None:
-    doc.status = ProcessingStatus.FAILED.value
-    doc.error_message = error[:2000]
-    doc.processing_completed_at = datetime.now(timezone.utc)
-    db.commit()
-    logger.error("Document %d FAILED: %s", doc.id, error)
+        # ── Stage 2: Check if fallback needed ─────────────────
+        if needs_fallback(primary_result, threshold=CONFIDENCE_THRESHOLD):
+            used_fallback = True
+            logger.info("Triggering fallback extraction (Gemini Pro)…")
 
+            # ── Stage 3: Fallback (Gemini Pro, free) ──────────
+            fallback_result = extract_fallback(
+                pdf_bytes=pdf_bytes,
+                page_count=page_count,
+                char_count=char_count,
+            )
 
-def _apply_fields(doc: Document, data: dict, confidence: float | None) -> None:
-    doc.vendor_name    = data.get("vendor_name")
-    doc.invoice_number = data.get("invoice_number")
-    doc.invoice_date   = data.get("invoice_date")
-    doc.due_date       = data.get("due_date")
-    doc.currency       = data.get("currency", "INR")
-    doc.ai_confidence  = confidence
-
-    raw_total = data.get("total_amount")
-    if raw_total is not None:
-        try:
-            doc.total_amount = float(str(raw_total).replace(",", "").replace("₹", "").strip())
-        except (ValueError, TypeError):
-            doc.total_amount = None
-
-
-def _write_fields(db, doc: Document, data: dict, confidence: float | None) -> None:
-    import json
-
-    def add(name: str, value, ftype: str = "string") -> None:
-        if value is None:
-            return
-        db.add(ExtractedField(
-            document_id=doc.id,
-            field_name=name,
-            field_value=str(value) if not isinstance(value, (dict, list)) else json.dumps(value),
-            field_type=ftype,
-            confidence=confidence,
-        ))
-
-    for key, value in data.items():
-        if isinstance(value, list):
-            for i, item in enumerate(value, 1):
-                add(f"{key}_{i}", item, "list_item")
-        elif isinstance(value, dict):
-            add(key, value, "object")
-        elif isinstance(value, (int, float)):
-            add(key, value, "number")
+            if fallback_result and primary_result:
+                # Merge: primary fields are kept; fallback fills in nulls
+                final_result = merge_best(primary_result, fallback_result)
+                logger.info(
+                    "Merged primary + fallback → confidence=%.2f",
+                    final_result.get("ai_confidence", 0),
+                )
+            elif fallback_result:
+                final_result = fallback_result
+            else:
+                # Both ran but fallback returned nothing — use primary anyway
+                final_result = primary_result
         else:
-            add(key, value, "string")
+            final_result = primary_result
+
+    except Exception as exc:
+        logger.error("Extraction error for document id=%d: %s", document_id, exc)
+        logger.error(traceback.format_exc())
+        with get_db() as db:
+            doc = db.query(Document).filter(Document.id == document_id).first()
+            if doc:
+                doc.status = "failed"
+                doc.error_message = str(exc)[:500]
+                db.commit()
+        return
+
+    # ── Stage 4: Determine status ────────────────────────────
+    if final_result is None:
+        status = "failed"
+        final_result = {"ai_confidence": 0.0}
+    else:
+        confidence = final_result.get("ai_confidence", 0.0)
+        if confidence >= 0.80:
+            status = "completed"
+        elif confidence >= 0.50:
+            # Passed fallback but some gaps remain — completed but flag it
+            status = "completed"
+        else:
+            status = "needs_review"
+
+    # ── Stage 5: Write everything to DB ─────────────────────
+    try:
+        with get_db() as db:
+            _update_document(db, document_id, final_result, status)
+            _write_fields(db, document_id, final_result)
+    except Exception as exc:
+        logger.error("DB write error for document id=%d: %s", document_id, exc)
+        logger.error(traceback.format_exc())
+        with get_db() as db:
+            doc = db.query(Document).filter(Document.id == document_id).first()
+            if doc:
+                doc.status = "failed"
+                doc.error_message = f"DB write error: {str(exc)[:400]}"
+                db.commit()
+        return
+
+    logger.info(
+        "Pipeline complete — document id=%d, status=%s, fallback_used=%s, confidence=%.2f",
+        document_id, status, used_fallback, final_result.get("ai_confidence", 0),
+    )

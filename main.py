@@ -122,9 +122,9 @@ if __name__ == "__main__":
     setup_logging(level=args.log_level)
 
     if not args.dry_run:
-        if not os.getenv("ANTHROPIC_API_KEY"):
-            logger.error("ANTHROPIC_API_KEY not set. Use --dry-run to skip Claude.")
-            raise SystemExit(1)
+        if not os.getenv("GEMINI_API_KEY"):
+          logger.error("GEMINI_API_KEY not set. Get free key at aistudio.google.com")
+          raise SystemExit(1)
         init_db()
 
     if args.file:

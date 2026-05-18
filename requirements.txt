@@ -5,7 +5,7 @@ python-multipart==0.0.9
 
 # Database
 sqlalchemy==2.0.35
-psycopg2-binary==2.9.9
+psycopg2-binary>=2.9.9
 alembic==1.13.3
 
 # PDF processing — pdfplumber (primary) + PyMuPDF (fallback)
@@ -14,6 +14,7 @@ PyMuPDF==1.24.9
 
 # HTTP client — used for Gemini API calls (no extra SDK needed, httpx is enough)
 httpx==0.27.2
+google-generativeai>=0.8.0
 
 # Data validation
 pydantic==2.9.2
