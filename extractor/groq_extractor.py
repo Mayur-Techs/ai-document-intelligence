@@ -122,7 +122,7 @@ def _call_groq(
             response = client.chat.completions.create(
                 model=model_name,
                 messages=messages,
-                temperature=0.1,
+                temperature=0.0,
                 max_tokens=2048,
                 response_format={"type": "json_object"},  # forces JSON output
             )

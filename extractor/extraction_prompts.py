@@ -102,6 +102,31 @@ Always return dates as "DD MMM YYYY":
   • Empty or dash cells → null for that amount
 
 ═══════════════════════════════════════════════════════════
+  MEMORY BLOCK 7 — STRICT NO-HALLUCINATION RULES
+═══════════════════════════════════════════════════════════
+
+NEVER invent or calculate numbers that are not explicitly printed in the document.
+
+tax_amount rules:
+  • Set tax_amount ONLY if the document has an explicit GST, CGST, SGST, IGST,
+    VAT, TDS, or tax line with an actual printed number
+  • If NO tax line exists in the document → tax_amount = null
+  • Do NOT calculate tax from a percentage — only use the printed tax amount
+
+subtotal rules:
+  • Set subtotal ONLY if explicitly labeled in the document
+  • If not printed → subtotal = null (the pipeline will compute it from line items)
+
+line item amount rules:
+  • Copy amounts EXACTLY as printed — do not round, do not estimate
+  • If you cannot read an amount clearly → set it to null, do not guess
+  • Every amount you return must appear verbatim in the extracted text
+
+total_amount rules:
+  • Use the final "Total", "Grand Total", "Amount Payable" figure as printed
+  • If not found → set null (the pipeline will sum line items automatically)
+
+═══════════════════════════════════════════════════════════
   OUTPUT — strict JSON only, no markdown, no explanation
 ═══════════════════════════════════════════════════════════
 
@@ -114,9 +139,9 @@ Always return dates as "DD MMM YYYY":
   "invoice_date": "DD MMM YYYY or null",
   "due_date": "DD MMM YYYY or null",
   "currency": "INR",
-  "subtotal": 0.00,
-  "tax_amount": 0.00,
-  "total_amount": 0.00,
+  "subtotal": null,
+  "tax_amount": null,
+  "total_amount": null,
   "bank_ifsc": "IFSC code or null",
   "bank_account_number": "account number or null",
   "bank_name": "bank name or null",
@@ -135,11 +160,11 @@ Always return dates as "DD MMM YYYY":
 }
 
 Confidence guide:
-  0.90-1.00 → All critical fields found, amounts balance, layout clear
-  0.75-0.89 → Most fields found, one or two minor gaps
-  0.60-0.74 → Some critical fields missing or ambiguous layout
-  0.40-0.59 → Multiple critical fields missing
-  Below 0.40 → Not an invoice or completely unreadable
+  0.95-1.00 → All critical fields found, amounts verified, no ambiguity
+  0.85-0.94 → All critical fields found, minor gaps (e.g. due_date missing)
+  0.70-0.84 → Most fields found, one or two moderate gaps
+  0.50-0.69 → Some critical fields missing
+  Below 0.50 → Multiple critical fields missing or unreadable
 """
 
 

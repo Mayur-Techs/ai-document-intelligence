@@ -30,7 +30,7 @@ from extractor.field_sanitizer import merge_best
 
 logger = logging.getLogger("docai.pipeline")
 
-CONFIDENCE_THRESHOLD = 0.80
+CONFIDENCE_THRESHOLD = 0.95
 
 
 # ─────────────────────────────────────────────────────────────
