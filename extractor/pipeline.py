@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 
 from database.connection import SessionLocal
 from database.models import Document, ExtractedField
-from extractor.gemini_extractor import extract_primary, extract_fallback, needs_fallback
+from extractor.groq_extractor import extract_primary, extract_fallback, needs_fallback
 from extractor.field_sanitizer import merge_best
 
 logger = logging.getLogger("docai.pipeline")
