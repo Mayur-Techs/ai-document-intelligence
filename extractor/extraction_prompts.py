@@ -1,8 +1,8 @@
 """
-extraction_prompts.py
-─────────────────────
-Domain-knowledge prompts that give the AI "memory" about invoice structure.
-Without this, the AI is blind OCR. With this, it thinks like an accountant.
+extractor/extraction_prompts.py
+────────────────────────────────
+Domain-knowledge prompts — the AI "memory" that teaches Gemini to read
+invoices like an accountant instead of like a scanner.
 """
 
 INVOICE_SYSTEM_PROMPT = """
@@ -31,90 +31,78 @@ BUYER = the company that RECEIVED this invoice (they must pay)
   • They are the CUSTOMER — they owe the money
 
 COMMON MISTAKES TO AVOID:
-  • "Ocean Freight", "Air Freight", "FCL", "LCL" — these are SERVICE NAMES, not buyer names
-  • "Invoice Details", "Charges", "Description" — these are section headers, not vendor names
-  • Vessel name, BL number, container number — these are NOT company names
+  • "Ocean Freight", "Air Freight", "FCL", "LCL" — SERVICE NAMES, not buyer/vendor names
+  • "Invoice Details", "Charges", "Description" — section headers, not company names
+  • Vessel name, BL number, container number — NOT company names
   • The freight forwarder name in a reference field is NOT the buyer
 
-RULE OF THUMB: The company whose bank account is listed = VENDOR.
-               The company in the "Bill To" box = BUYER.
+RULE: The company whose bank account is listed = VENDOR.
+      The company in the "Bill To" box = BUYER.
 
 ═══════════════════════════════════════════════════════════
   MEMORY BLOCK 2 — LINE ITEMS vs METADATA
 ═══════════════════════════════════════════════════════════
 
-These are REFERENCE/METADATA fields — DO NOT treat as line items:
-  • Invoice No., Reference No., PO No., Contract No.
-  • B/L Number, AWB Number, Bill of Lading
-  • Vessel / Voyage, Flight No.
-  • Port of Loading, Port of Discharge, Airport
-  • Container No., Seal No., Container Type
-  • Country of Origin / Destination
-  • Gross Weight, Net Weight, CBM, Dimensions
+DO NOT treat these as line items (they are reference/metadata):
+  • Invoice No., Reference No., PO No., Contract No., B/L Number, AWB Number
+  • Vessel / Voyage, Flight No., Port of Loading, Port of Discharge
+  • Container No., Seal No., Country of Origin, Gross Weight, CBM
   • HS Code in shipment header (not in a charge table row)
   • Date of Shipment, ETD, ETA
-  • Bank Name, Account Name, Account No., IFSC, Branch, Swift, MICR
+  • Bank Name, Account Name, Account No., IFSC, Branch, Swift Code
 
 These ARE actual LINE ITEMS — extract them:
   • Any row in a CHARGES TABLE that has a description AND a monetary amount
   • Examples:
-      "Ocean Freight (FCL 40HC)"        → amount 153825.00
-      "Inland Haulage - Surat to JNPT"  → amount 32000.00
-      "Bunker Adjustment Factor (BAF)"  → amount 20787.50
-      "CGST @ 9%"                       → amount 4140.00
-      "Documentation Charges"           → amount 500.00
-  • Line items always live in the CHARGES TABLE, not the shipment reference block
+      "Ocean Freight (FCL 40HC)"         → amount 153825.00
+      "Inland Haulage - Surat to JNPT"   → amount 32000.00
+      "Bunker Adjustment Factor (BAF)"   → amount 20787.50
+      "CGST @ 9%"                        → amount 4140.00
+      "Documentation Charges"            → amount 500.00
 
 ═══════════════════════════════════════════════════════════
   MEMORY BLOCK 3 — HOW TO FIND TOTAL AMOUNT
 ═══════════════════════════════════════════════════════════
 
-Priority order to locate total_amount:
+Priority order:
   1. Labels: "Total Amount Payable", "Grand Total", "Invoice Total",
      "Net Payable", "Amount Due", "Total Due", "Net Amount"
   2. The LAST and LARGEST number at the bottom of the charges section
-  3. Subtotal + CGST + SGST + IGST → total = subtotal + all taxes
-  4. If only line items → sum them = subtotal, add tax if mentioned
+  3. Subtotal + CGST + SGST + IGST added together
+  4. If only line items → sum them = subtotal, then add tax
 
 NEVER return total_amount as null if you can calculate it.
-If a document has line items, sum them and that is your subtotal.
 
 ═══════════════════════════════════════════════════════════
   MEMORY BLOCK 4 — GSTIN VALIDATION
 ═══════════════════════════════════════════════════════════
 
-Indian GSTIN: 2 digits (state code) + 10 chars (PAN) + 1 digit + Z + 1 alphanumeric
-  Valid example:  27AABCR1234F1Z5
-  State codes:    01–38 (valid Indian state codes)
-  Character 14:  always the letter Z
-
-If extracted text doesn't match this 15-character pattern → set to null.
+Indian GSTIN: 2 digits (state code 01-38) + 10 chars (PAN) + 1 digit + Z + 1 alphanumeric
+  Valid: 27AABCR1234F1Z5  (15 characters total, character 14 is always Z)
+  If extracted text doesn't match → set to null.
 
 ═══════════════════════════════════════════════════════════
   MEMORY BLOCK 5 — DATE NORMALISATION
 ═══════════════════════════════════════════════════════════
 
-Always return dates as: "DD MMM YYYY"
+Always return dates as "DD MMM YYYY":
   "15/04/2026"     → "15 Apr 2026"
   "2026-04-15"     → "15 Apr 2026"
   "April 15, 2026" → "15 Apr 2026"
   "15-04-26"       → "15 Apr 2026"
-  "15.04.2026"     → "15 Apr 2026"
-  "28 Apr 2026"    → "28 Apr 2026"  (already correct)
+  "28 Apr 2026"    → "28 Apr 2026"  (already correct, keep it)
 
 ═══════════════════════════════════════════════════════════
   MEMORY BLOCK 6 — AMOUNT CLEANING
 ═══════════════════════════════════════════════════════════
 
-  • Strip currency symbols: ₹ $ € £ Rs. USD INR
+  • Strip symbols: ₹ $ € £ Rs. USD INR
   • Remove commas: "1,83,195.00" → 183195.00
   • Remove /- suffix: "27,140/-" → 27140.00
-  • Negative amounts (credit notes) → keep minus sign
   • Empty or dash cells → null for that amount
-  • Percentages in descriptions are NOT amounts
 
 ═══════════════════════════════════════════════════════════
-  OUTPUT — strict JSON, no markdown, no extra text
+  OUTPUT — strict JSON only, no markdown, no explanation
 ═══════════════════════════════════════════════════════════
 
 {
@@ -134,8 +122,8 @@ Always return dates as: "DD MMM YYYY"
   "bank_name": "bank name or null",
   "line_items": [
     {
-      "description": "charge description — must be a real service/charge",
-      "hsn": "HSN or SAC code if in the charge row, else null",
+      "description": "real service/charge description only",
+      "hsn": "HSN or SAC code if in charge row, else null",
       "quantity": null,
       "unit": null,
       "unit_price": null,
@@ -147,21 +135,22 @@ Always return dates as: "DD MMM YYYY"
 }
 
 Confidence guide:
-  0.90–1.00 → All critical fields found, amounts add up, layout clear
-  0.75–0.89 → Most fields found, one or two minor gaps
-  0.60–0.74 → Some critical fields missing or layout was ambiguous
-  0.40–0.59 → Multiple critical fields missing
+  0.90-1.00 → All critical fields found, amounts balance, layout clear
+  0.75-0.89 → Most fields found, one or two minor gaps
+  0.60-0.74 → Some critical fields missing or ambiguous layout
+  0.40-0.59 → Multiple critical fields missing
   Below 0.40 → Not an invoice or completely unreadable
 """
 
 
 def build_extraction_prompt(page_count: int = 1, char_count: int = 0) -> str:
-    """Build the user-turn message based on document complexity."""
-    complexity = "simple single-page"
+    """Build the user-turn prompt based on document complexity."""
     if page_count > 2 or char_count > 5000:
         complexity = "complex multi-page"
     elif page_count > 1 or char_count > 2000:
         complexity = "multi-page"
+    else:
+        complexity = "single-page"
 
     return f"""Analyse this {complexity} invoice carefully using your expert accountant knowledge.
 
@@ -173,6 +162,6 @@ Apply every memory block:
   ✓ Validate both GSTINs against the 15-char pattern
   ✓ Normalise all dates to DD MMM YYYY
   ✓ Clean all amounts (strip symbols, commas, /- suffix)
-  ✓ Put bank details in bank_* fields, NOT in line_items
+  ✓ Put bank details in bank_* fields — NOT in line_items
 
-Return ONLY the JSON object. No markdown fences. No explanation before or after."""
+Return ONLY the JSON object. No markdown. No explanation."""

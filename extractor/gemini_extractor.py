@@ -1,226 +1,194 @@
 """
-gemini_extractor.py
-────────────────────
-Primary and fallback extraction using Google Gemini (free tier).
+extractor/gemini_extractor.py
+──────────────────────────────
+Extraction using the NEW google-genai SDK (not the deprecated google.generativeai).
 
-Primary  → gemini-2.0-flash  (fast, free, handles most invoices)
-Fallback → gemini-1.5-pro    (slower but more thorough, for complex/low-confidence docs)
+Primary  → gemini-2.0-flash  (free, fast)
+Fallback → gemini-1.5-pro    (free, more thorough — triggered if confidence < 0.80)
 
-Both models accept PDF bytes natively via the File API or inline base64.
 Free tier limits (Google AI Studio key):
-  • gemini-2.0-flash : 15 RPM, 1 500 RPD, 1M tokens/day
-  • gemini-1.5-pro   : 2 RPM, 50 RPD
+  gemini-2.0-flash : 15 RPM, 1500 RPD
+  gemini-1.5-pro   : 2 RPM, 50 RPD
 
-Set GEMINI_API_KEY in your environment or .env file.
-Get a free key at: https://aistudio.google.com/app/apikey
+Get your free key → https://aistudio.google.com/app/apikey
 """
 
-import os
+from __future__ import annotations
+
 import json
-import time
-import base64
 import logging
-from pathlib import Path
+import os
+import time
+import traceback
 from typing import Optional
 
-import google.generativeai as genai
-from google.generativeai.types import HarmCategory, HarmBlockThreshold
+from google import genai
+from google.genai import types
 
-from extraction_prompts import INVOICE_SYSTEM_PROMPT, build_extraction_prompt
-from field_sanitizer import sanitize
+from extractor.extraction_prompts import INVOICE_SYSTEM_PROMPT, build_extraction_prompt
+from extractor.field_sanitizer import sanitize
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("docai.gemini")
 
-# ──────────────────────────────────────────────
-#  Model names
-# ──────────────────────────────────────────────
 PRIMARY_MODEL  = "gemini-2.0-flash"
 FALLBACK_MODEL = "gemini-1.5-pro"
 
-# ──────────────────────────────────────────────
-#  Safety settings — turn off for business docs
-# ──────────────────────────────────────────────
-SAFETY_SETTINGS = {
-    HarmCategory.HARM_CATEGORY_HARASSMENT:        HarmBlockThreshold.BLOCK_NONE,
-    HarmCategory.HARM_CATEGORY_HATE_SPEECH:       HarmBlockThreshold.BLOCK_NONE,
-    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-}
 
-# ──────────────────────────────────────────────
-#  Initialise SDK
-# ──────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
+#  Client (created once per call — thread safe)
+# ─────────────────────────────────────────────────────────────
 
-def _init_gemini() -> None:
+def _get_client() -> genai.Client:
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise EnvironmentError(
-            "GEMINI_API_KEY not set. Get a free key at "
-            "https://aistudio.google.com/app/apikey and add it to your .env"
+            "GEMINI_API_KEY is not set. "
+            "Get a free key at https://aistudio.google.com/app/apikey"
         )
-    genai.configure(api_key=api_key)
+    return genai.Client(api_key=api_key)
 
 
-# ──────────────────────────────────────────────
-#  Core extraction helper
-# ──────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
+#  Core extraction — shared by primary and fallback
+# ─────────────────────────────────────────────────────────────
 
 def _extract_with_model(
     pdf_bytes: bytes,
     model_name: str,
     page_count: int = 1,
     char_count: int = 0,
-    retry: int = 2,
+    max_retries: int = 2,
 ) -> Optional[dict]:
     """
-    Upload PDF to Gemini and extract structured invoice data.
-    Returns sanitized dict or None on failure.
+    Send the PDF to Gemini and get structured invoice JSON back.
+    Returns a sanitized dict or None on failure.
     """
-    _init_gemini()
+    client = _get_client()
+    user_prompt = build_extraction_prompt(page_count, char_count)
 
-    generation_config = genai.GenerationConfig(
-        temperature=0.1,        # low temp = more deterministic extraction
-        top_p=0.9,
-        max_output_tokens=4096,
-        response_mime_type="application/json",   # enforce JSON output
-    )
-
-    model = genai.GenerativeModel(
-        model_name=model_name,
+    config = types.GenerateContentConfig(
         system_instruction=INVOICE_SYSTEM_PROMPT,
-        generation_config=generation_config,
-        safety_settings=SAFETY_SETTINGS,
+        temperature=0.1,           # low = deterministic extraction
+        max_output_tokens=4096,
+        response_mime_type="application/json",   # force JSON output
     )
 
-    # Upload PDF via File API (handles large files better than inline base64)
-    uploaded_file = None
-    for attempt in range(retry + 1):
+    for attempt in range(max_retries + 1):
         try:
-            # Upload the PDF bytes
-            import tempfile
-            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-                tmp.write(pdf_bytes)
-                tmp_path = tmp.name
-
-            uploaded_file = genai.upload_file(
-                path=tmp_path,
-                mime_type="application/pdf",
-                display_name=f"invoice_{int(time.time())}.pdf",
+            response = client.models.generate_content(
+                model=model_name,
+                contents=[
+                    # Send PDF bytes inline — no temp file needed
+                    types.Part.from_bytes(
+                        data=pdf_bytes,
+                        mime_type="application/pdf",
+                    ),
+                    user_prompt,
+                ],
+                config=config,
             )
 
-            # Wait for file to be processed
-            while uploaded_file.state.name == "PROCESSING":
-                time.sleep(1)
-                uploaded_file = genai.get_file(uploaded_file.name)
-
-            if uploaded_file.state.name == "FAILED":
-                raise ValueError("Gemini file processing failed")
-
-            # Build the prompt
-            user_prompt = build_extraction_prompt(page_count, char_count)
-
-            # Call the model
-            response = model.generate_content(
-                [uploaded_file, user_prompt]
-            )
-
-            # Clean up uploaded file
-            try:
-                genai.delete_file(uploaded_file.name)
-                os.unlink(tmp_path)
-            except Exception:
-                pass
-
-            if not response.text:
-                logger.warning(f"[{model_name}] Empty response on attempt {attempt+1}")
+            raw_text = (response.text or "").strip()
+            if not raw_text:
+                logger.warning("[%s] Empty response on attempt %d", model_name, attempt + 1)
+                if attempt < max_retries:
+                    time.sleep(2 ** attempt)
                 continue
 
-            # Parse JSON
-            raw_text = response.text.strip()
-            # Strip markdown fences if model ignores the mime type instruction
-            raw_text = raw_text.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+            # Strip markdown fences if model ignores the mime_type instruction
+            raw_text = (
+                raw_text
+                .removeprefix("```json")
+                .removeprefix("```")
+                .removesuffix("```")
+                .strip()
+            )
 
             raw_data = json.loads(raw_text)
-            return sanitize(raw_data)
+            result = sanitize(raw_data)
+            logger.info(
+                "[%s] Extraction OK — confidence=%.2f",
+                model_name,
+                result.get("ai_confidence", 0),
+            )
+            return result
 
-        except json.JSONDecodeError as e:
-            logger.warning(f"[{model_name}] JSON parse error on attempt {attempt+1}: {e}")
-            if attempt < retry:
+        except json.JSONDecodeError as exc:
+            logger.warning(
+                "[%s] JSON parse error on attempt %d: %s",
+                model_name, attempt + 1, exc,
+            )
+            if attempt < max_retries:
                 time.sleep(2 ** attempt)
-            continue
 
-        except Exception as e:
-            logger.error(f"[{model_name}] Extraction error on attempt {attempt+1}: {e}")
-            if uploaded_file:
-                try:
-                    genai.delete_file(uploaded_file.name)
-                except Exception:
-                    pass
-            if attempt < retry:
+        except Exception as exc:
+            logger.error(
+                "[%s] Error on attempt %d: %s",
+                model_name, attempt + 1, exc,
+            )
+            logger.debug(traceback.format_exc())
+            if attempt < max_retries:
                 time.sleep(2 ** attempt)
-            continue
 
+    logger.error("[%s] All %d attempts failed", model_name, max_retries + 1)
     return None
 
 
-# ──────────────────────────────────────────────
-#  Public API
-# ──────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
+#  Public API  (imported by pipeline.py)
+# ─────────────────────────────────────────────────────────────
 
-def extract_primary(pdf_bytes: bytes, page_count: int = 1, char_count: int = 0) -> Optional[dict]:
-    """
-    Primary extraction using Gemini Flash (free, fast).
-    Returns sanitized dict or None.
-    """
-    logger.info(f"[Primary] Running gemini-2.0-flash extraction...")
-    result = _extract_with_model(
+def extract_primary(
+    pdf_bytes: bytes,
+    page_count: int = 1,
+    char_count: int = 0,
+) -> Optional[dict]:
+    """Primary extraction using Gemini Flash (free, fast)."""
+    logger.info("Primary extraction starting → %s", PRIMARY_MODEL)
+    return _extract_with_model(
         pdf_bytes=pdf_bytes,
         model_name=PRIMARY_MODEL,
         page_count=page_count,
         char_count=char_count,
-        retry=2,
+        max_retries=2,
     )
-    if result:
-        logger.info(f"[Primary] Confidence: {result.get('ai_confidence', 0):.2f}")
-    return result
 
 
-def extract_fallback(pdf_bytes: bytes, page_count: int = 1, char_count: int = 0) -> Optional[dict]:
-    """
-    Fallback extraction using Gemini Pro (free tier, more thorough).
-    Called when primary confidence < threshold or critical fields are null.
-    """
-    logger.info(f"[Fallback] Running gemini-1.5-pro extraction (deeper analysis)...")
-    result = _extract_with_model(
+def extract_fallback(
+    pdf_bytes: bytes,
+    page_count: int = 1,
+    char_count: int = 0,
+) -> Optional[dict]:
+    """Fallback extraction using Gemini Pro (free, more thorough)."""
+    logger.info("Fallback extraction starting → %s", FALLBACK_MODEL)
+    return _extract_with_model(
         pdf_bytes=pdf_bytes,
         model_name=FALLBACK_MODEL,
         page_count=page_count,
         char_count=char_count,
-        retry=1,        # Pro is slower, limit retries
+        max_retries=1,
     )
-    if result:
-        logger.info(f"[Fallback] Confidence: {result.get('ai_confidence', 0):.2f}")
-    return result
 
 
-def needs_fallback(result: dict, threshold: float = 0.80) -> bool:
+def needs_fallback(result: Optional[dict], threshold: float = 0.80) -> bool:
     """
-    Decide if a primary extraction result needs the fallback model.
-    Triggers fallback if:
-      • confidence < threshold, OR
-      • any critical field is None
+    Returns True if the primary result should be supplemented by fallback.
+    Triggers when confidence is below threshold OR any critical field is None.
     """
     if result is None:
+        logger.info("Fallback needed: primary returned None")
         return True
 
-    critical_fields = ['vendor_name', 'invoice_number', 'invoice_date', 'total_amount']
-    has_null_critical = any(result.get(f) is None for f in critical_fields)
-    low_confidence = result.get('ai_confidence', 0) < threshold
+    critical = ["vendor_name", "invoice_number", "invoice_date", "total_amount"]
+    null_fields = [f for f in critical if result.get(f) is None]
+    low_conf = result.get("ai_confidence", 0) < threshold
 
-    if low_confidence:
-        logger.info(f"Fallback triggered: confidence {result.get('ai_confidence'):.2f} < {threshold}")
-    if has_null_critical:
-        nulls = [f for f in critical_fields if result.get(f) is None]
-        logger.info(f"Fallback triggered: null critical fields → {nulls}")
+    if null_fields:
+        logger.info("Fallback needed: null critical fields → %s", null_fields)
+    if low_conf:
+        logger.info(
+            "Fallback needed: confidence %.2f < threshold %.2f",
+            result.get("ai_confidence", 0), threshold,
+        )
 
-    return low_confidence or has_null_critical
+    return bool(null_fields) or low_conf
