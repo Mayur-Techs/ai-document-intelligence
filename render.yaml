@@ -12,6 +12,8 @@ services:
         fromDatabase:
           name: doc-intelligence-db
           property: connectionString
+      - key: GEMINI_API_KEY
+        sync: false
     autoDeploy: true
 
 databases:
