@@ -22,7 +22,6 @@ from api.routes.documents import router as documents_router
 from utils.logger import setup_logging
 
 from api.export import router as export_router
-app.include_router(export_router)
 
 setup_logging(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("docai.api")
@@ -52,6 +51,7 @@ app = FastAPI(
     redoc_url="/redoc",
     lifespan=lifespan,
 )
+app.include_router(export_router)
 
 app.add_middleware(
     CORSMiddleware,
