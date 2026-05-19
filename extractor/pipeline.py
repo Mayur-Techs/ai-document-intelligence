@@ -1,16 +1,13 @@
 """
 extractor/pipeline.py
 ──────────────────────
-Entry point called by the FastAPI background task after every upload.
+Entry point: await process_document(document_id)
 
-Called as:  await process_document(document_id)
+Primary  → Cerebras  (free, 1000+ tokens/sec, llama-3.3-70b)
+Fallback → Groq      (free, separate vendor — triggers if confidence < 0.95
+                       OR any critical field is null)
 
-Key fixes vs previous version:
-  - Uses SessionLocal() directly instead of get_db() context manager
-    (get_db() is a FastAPI generator/yield dependency — cannot be used with `with`)
-  - Full exception logging so errors appear in Render logs, not silent fails
-  - Tries multiple possible file-path column names defensively
-  - Self-contained DB session management — no dependency on how routes use get_db
+Also updates platform_stats after every extraction for the live counter.
 """
 
 from __future__ import annotations
@@ -21,11 +18,13 @@ import os
 import traceback
 from pathlib import Path
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from database.connection import SessionLocal
 from database.models import Document, ExtractedField
-from extractor.groq_extractor import extract_primary, extract_fallback, needs_fallback
+from extractor.cerebras_extractor import extract_primary
+from extractor.groq_extractor import extract_fallback, needs_fallback
 from extractor.field_sanitizer import merge_best
 
 logger = logging.getLogger("docai.pipeline")
@@ -33,40 +32,31 @@ logger = logging.getLogger("docai.pipeline")
 CONFIDENCE_THRESHOLD = 0.95
 
 
-# ─────────────────────────────────────────────────────────────
-#  Safe DB session — never use get_db() here, it's a FastAPI
-#  generator and breaks outside of request context
-# ─────────────────────────────────────────────────────────────
-
-def _get_session() -> Session:
-    """Return a plain SQLAlchemy session. Caller must call .close()."""
+def _session() -> Session:
     return SessionLocal()
 
 
-# ─────────────────────────────────────────────────────────────
-#  Resolve the file path from the document record
-#  (handles multiple possible column names defensively)
-# ─────────────────────────────────────────────────────────────
-
-def _get_file_path(doc) -> str | None:
-    """Try every possible attribute name for the stored file path."""
+def _resolve_path(doc) -> Path | None:
     for attr in ("file_path", "upload_path", "path", "file_name", "filename"):
         val = getattr(doc, attr, None)
-        if val:
-            return str(val)
+        if not val:
+            continue
+        for base in ("", "/app", str(Path("/app") / os.getenv("UPLOAD_DIR", "data/raw"))):
+            p = Path(base) / val if base else Path(val)
+            if p.exists():
+                return p
+        # try just the filename under upload dir
+        upload_dir = Path("/app") / os.getenv("UPLOAD_DIR", "data/raw")
+        p = upload_dir / Path(val).name
+        if p.exists():
+            return p
     return None
 
 
-# ─────────────────────────────────────────────────────────────
-#  DB write helpers
-# ─────────────────────────────────────────────────────────────
-
-def _update_document(db: Session, document_id: int, result: dict, status: str) -> None:
-    doc = db.query(Document).filter(Document.id == document_id).first()
+def _update_document(db: Session, doc_id: int, result: dict, status: str) -> None:
+    doc = db.query(Document).filter(Document.id == doc_id).first()
     if not doc:
-        logger.error("_update_document: document id=%d not found", document_id)
         return
-
     doc.status         = status
     doc.vendor_name    = result.get("vendor_name")
     doc.invoice_number = result.get("invoice_number")
@@ -77,20 +67,15 @@ def _update_document(db: Session, document_id: int, result: dict, status: str) -
     doc.ai_confidence  = result.get("ai_confidence", 0.0)
     doc.error_message  = None
     db.commit()
-    logger.info(
-        "Document id=%d → status=%s  confidence=%.2f",
-        document_id, status, doc.ai_confidence or 0,
-    )
+    logger.info("Doc id=%d → %s  conf=%.2f", doc_id, status, doc.ai_confidence or 0)
 
 
-def _write_fields(db: Session, document_id: int, result: dict) -> None:
-    # Clear any previous extraction
+def _write_fields(db: Session, doc_id: int, result: dict) -> None:
     db.query(ExtractedField).filter(
-        ExtractedField.document_id == document_id
+        ExtractedField.document_id == doc_id
     ).delete(synchronize_session=False)
 
     confidence = result.get("ai_confidence", 0.0)
-
     scalar_fields = [
         ("vendor_name",         result.get("vendor_name"),         "string"),
         ("vendor_gstin",        result.get("vendor_gstin"),        "string"),
@@ -107,16 +92,15 @@ def _write_fields(db: Session, document_id: int, result: dict) -> None:
         ("bank_account_number", result.get("bank_account_number"), "string"),
         ("bank_name",           result.get("bank_name"),           "string"),
     ]
-
     written = 0
-    for field_name, field_value, field_type in scalar_fields:
-        if field_value is None:
+    for name, value, ftype in scalar_fields:
+        if value is None:
             continue
         db.add(ExtractedField(
-            document_id=document_id,
-            field_name=field_name,
-            field_value=str(field_value),
-            field_type=field_type,
+            document_id=doc_id,
+            field_name=name,
+            field_value=str(value),
+            field_type=ftype,
             confidence=confidence,
             is_verified=False,
         ))
@@ -124,7 +108,7 @@ def _write_fields(db: Session, document_id: int, result: dict) -> None:
 
     for idx, item in enumerate(result.get("line_items", []), start=1):
         db.add(ExtractedField(
-            document_id=document_id,
+            document_id=doc_id,
             field_name=f"line_items_{idx}",
             field_value=json.dumps(item, ensure_ascii=False),
             field_type="list_item",
@@ -133,164 +117,135 @@ def _write_fields(db: Session, document_id: int, result: dict) -> None:
         ))
 
     db.commit()
-    logger.info(
-        "Wrote %d fields + %d line items for document id=%d",
-        written, len(result.get("line_items", [])), document_id,
-    )
+    logger.info("Wrote %d fields + %d line items for doc id=%d",
+                written, len(result.get("line_items", [])), doc_id)
 
 
-def _mark_failed(document_id: int, reason: str) -> None:
-    """Write failed status to DB — has its own session so it always works."""
-    db = _get_session()
+def _update_platform_stats(db: Session, confidence: float) -> None:
+    """Increment global counter and running confidence sum for the live stats widget."""
     try:
-        doc = db.query(Document).filter(Document.id == document_id).first()
+        db.execute(text("""
+            CREATE TABLE IF NOT EXISTS platform_stats (
+                id               INTEGER PRIMARY KEY DEFAULT 1,
+                total_documents  INTEGER DEFAULT 0,
+                confidence_sum   FLOAT   DEFAULT 0.0
+            )
+        """))
+        db.execute(text("""
+            INSERT INTO platform_stats (id, total_documents, confidence_sum)
+            VALUES (1, 1, :conf)
+            ON CONFLICT (id) DO UPDATE
+              SET total_documents = platform_stats.total_documents + 1,
+                  confidence_sum  = platform_stats.confidence_sum  + :conf
+        """), {"conf": float(confidence)})
+        db.commit()
+    except Exception as e:
+        logger.warning("platform_stats update failed (non-critical): %s", e)
+
+
+def _mark_failed(doc_id: int, reason: str) -> None:
+    db = _session()
+    try:
+        doc = db.query(Document).filter(Document.id == doc_id).first()
         if doc:
             doc.status = "failed"
             doc.error_message = reason[:500]
             db.commit()
-            logger.error("Document id=%d marked failed: %s", document_id, reason)
-    except Exception as e:
-        logger.error("Could not mark document %d as failed: %s", document_id, e)
+            logger.error("Doc id=%d marked failed: %s", doc_id, reason)
     finally:
         db.close()
 
 
-# ─────────────────────────────────────────────────────────────
-#  Main entry point  (called by FastAPI background task)
-# ─────────────────────────────────────────────────────────────
-
 async def process_document(document_id: int) -> None:
-    """
-    Full extraction pipeline for one document.
-    Called as:  await process_document(document_id)
-    Never raises — all errors are caught and written to DB.
-    """
-    logger.info("═══ Pipeline START  document id=%d ═══", document_id)
+    logger.info("═══ Pipeline START  doc id=%d ═══", document_id)
 
-    # ── 1. Load document record ──────────────────────────────
-    db = _get_session()
+    # 1. Load document from DB
+    db = _session()
     try:
         doc = db.query(Document).filter(Document.id == document_id).first()
         if not doc:
-            logger.error("Document id=%d not found in DB", document_id)
+            logger.error("Doc id=%d not found", document_id)
             return
-
-        file_path  = _get_file_path(doc)
+        file_path  = _resolve_path(doc)
         page_count = getattr(doc, "page_count", None) or 1
         char_count = getattr(doc, "char_count",  None) or 0
-
-        # Mark processing immediately so the UI shows correct state
         doc.status = "processing"
         db.commit()
-        logger.info(
-            "Document id=%d  file=%s  pages=%d  chars=%d",
-            document_id, file_path, page_count, char_count,
-        )
     except Exception as e:
-        logger.error("DB read error for document id=%d: %s", document_id, e)
-        logger.error(traceback.format_exc())
+        logger.error("DB read error: %s", e)
         return
     finally:
         db.close()
 
-    # ── 2. Read PDF bytes ────────────────────────────────────
+    # 2. Read PDF bytes
     if not file_path:
-        _mark_failed(document_id, "No file path stored on document record")
+        _mark_failed(document_id, "File not found on disk")
         return
-
-    # Render stores uploads relative to /app (WORKDIR in Dockerfile)
-    resolved = Path(file_path)
-    if not resolved.is_absolute():
-        resolved = Path("/app") / resolved
-
-    if not resolved.exists():
-        # Try UPLOAD_DIR prefix from env
-        upload_dir = os.getenv("UPLOAD_DIR", "data/raw")
-        resolved = Path("/app") / upload_dir / Path(file_path).name
-
-    if not resolved.exists():
-        _mark_failed(document_id, f"PDF file not found at {file_path}")
-        return
-
     try:
-        pdf_bytes = resolved.read_bytes()
-        logger.info("Read %d bytes from %s", len(pdf_bytes), resolved)
+        pdf_bytes = file_path.read_bytes()
+        logger.info("Read %d bytes from %s", len(pdf_bytes), file_path)
     except Exception as e:
         _mark_failed(document_id, f"Cannot read PDF: {e}")
         return
 
-    # ── 3. Primary extraction  (Gemini Flash, free) ──────────
-    final_result = None
+    # 3. Primary extraction — Cerebras (free, fast)
+    final_result  = None
     used_fallback = False
-
     try:
-        logger.info("Running primary extraction (Gemini Flash)…")
-        primary = extract_primary(
-            pdf_bytes=pdf_bytes,
-            page_count=page_count,
-            char_count=char_count,
-        )
+        logger.info("Primary → Cerebras llama-3.3-70b")
+        primary = extract_primary(pdf_bytes, page_count, char_count)
         logger.info(
-            "Primary done — confidence=%.2f  vendor=%s  invoice=%s  total=%s",
+            "Primary done — conf=%.2f  vendor=%s  invoice=%s  total=%s",
             (primary or {}).get("ai_confidence", 0),
             (primary or {}).get("vendor_name"),
             (primary or {}).get("invoice_number"),
             (primary or {}).get("total_amount"),
         )
 
-        # ── 4. Fallback if needed  (Gemini Pro, free) ────────
+        # 4. Fallback — Groq (completely separate vendor/quota)
         if needs_fallback(primary, threshold=CONFIDENCE_THRESHOLD):
             used_fallback = True
-            logger.info("Triggering fallback extraction (Gemini Pro)…")
-            fallback = extract_fallback(
-                pdf_bytes=pdf_bytes,
-                page_count=page_count,
-                char_count=char_count,
-            )
+            logger.info("Fallback → Groq llama-3.3-70b-versatile")
+            fallback = extract_fallback(pdf_bytes, page_count, char_count)
             logger.info(
-                "Fallback done — confidence=%.2f",
+                "Fallback done — conf=%.2f",
                 (fallback or {}).get("ai_confidence", 0),
             )
-
             if fallback and primary:
                 final_result = merge_best(primary, fallback)
             elif fallback:
                 final_result = fallback
             else:
-                final_result = primary   # fallback returned nothing, use primary
+                final_result = primary
         else:
             final_result = primary
 
     except Exception as e:
-        logger.error("Extraction error for document id=%d:", document_id)
-        logger.error(traceback.format_exc())
-        _mark_failed(document_id, f"Extraction error: {str(e)[:400]}")
+        logger.error("Extraction error: %s\n%s", e, traceback.format_exc())
+        _mark_failed(document_id, str(e)[:400])
         return
 
-    # ── 5. Determine status ──────────────────────────────────
     if final_result is None:
-        _mark_failed(document_id, "Both primary and fallback returned no result")
+        _mark_failed(document_id, "Both Cerebras and Groq returned no result")
         return
 
     confidence = final_result.get("ai_confidence", 0.0)
-    status = "completed" if confidence >= 0.50 else "needs_review"
+    status     = "completed" if confidence >= 0.50 else "needs_review"
 
-    logger.info(
-        "Final result — confidence=%.2f  status=%s  fallback_used=%s",
-        confidence, status, used_fallback,
-    )
-
-    # ── 6. Write to DB ───────────────────────────────────────
-    db = _get_session()
+    # 5. Write results to DB + update live counter
+    db = _session()
     try:
         _update_document(db, document_id, final_result, status)
         _write_fields(db, document_id, final_result)
+        _update_platform_stats(db, confidence)
     except Exception as e:
-        logger.error("DB write error for document id=%d: %s", document_id, e)
-        logger.error(traceback.format_exc())
-        _mark_failed(document_id, f"DB write error: {str(e)[:400]}")
+        logger.error("DB write error: %s\n%s", e, traceback.format_exc())
+        _mark_failed(document_id, str(e)[:400])
         return
     finally:
         db.close()
 
-    logger.info("═══ Pipeline END  document id=%d  status=%s ═══", document_id, status)
+    logger.info(
+        "═══ Pipeline END  doc=%d  status=%s  fallback=%s  conf=%.2f ═══",
+        document_id, status, used_fallback, confidence,
+    )
