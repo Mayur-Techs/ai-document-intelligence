@@ -51,19 +51,21 @@ app = FastAPI(
     redoc_url="/redoc",
     lifespan=lifespan,
 )
-app.include_router(export_router)
+
+
+from fastapi.middleware.cors import CORSMiddleware
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv(
-        "CORS_ORIGINS", "http://localhost:3000,http://localhost:5678"
-    ).split(","),
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition"],   # ← critical for file downloads
 )
 
 app.include_router(documents_router, prefix="/api/v1")
+app.include_router(export_router)
 
 
 @app.get("/health")
