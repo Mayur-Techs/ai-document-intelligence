@@ -5,7 +5,7 @@ import os
 from collections.abc import Generator
 from contextlib import contextmanager
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from .models import Base
@@ -34,7 +34,33 @@ def init_db() -> None:
     """Create all tables if they don't exist. Safe to call on every startup."""
     logger.info("Initializing database schema…")
     Base.metadata.create_all(bind=engine)
-    logger.info("Database ready.")
+
+    # Self-healing database schema: add missing columns to documents if table already existed
+    db = SessionLocal()
+    try:
+        logger.info("Verifying documents table schema and applying self-healing alters if needed...")
+        db.execute(text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS user_id INTEGER"))
+        db.execute(text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS ip_address VARCHAR(45)"))
+        db.execute(text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP"))
+
+        # Try to add foreign key constraint. It might fail if already exists, which we catch.
+        try:
+            db.execute(text(
+                "ALTER TABLE documents ADD CONSTRAINT fk_documents_user_id "
+                "FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL"
+            ))
+        except Exception:
+            db.rollback()
+            logger.info("Foreign key constraint fk_documents_user_id might already exist or users table was not ready.")
+
+        db.commit()
+        logger.info("Database schema verification and healing completed.")
+    except Exception as exc:
+        db.rollback()
+        logger.error("Error during database schema healing: %s", exc)
+    finally:
+        db.close()
+
 
 
 @contextmanager
