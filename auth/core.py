@@ -38,7 +38,7 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 
-from database.connection import get_db
+from database.connection import get_db_for_fastapi
 from database.models import Session as DBSession, User
 
 # ─────────────────────────────────────────────────────────────
@@ -112,7 +112,7 @@ bearer_scheme = HTTPBearer(auto_error=False)
 
 def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db_for_fastapi),
 ) -> User:
     """
     FastAPI dependency — protects any route it's added to.
@@ -175,7 +175,7 @@ def get_current_user(
 
 def get_optional_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db_for_fastapi),
 ) -> Optional[User]:
     """
     Same as get_current_user but doesn't raise if not logged in.

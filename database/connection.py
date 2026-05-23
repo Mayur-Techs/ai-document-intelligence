@@ -16,6 +16,8 @@ DATABASE_URL: str = os.getenv(
     "DATABASE_URL",
     "postgresql://docai:docai@localhost:5432/docai",
 )
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
 engine = create_engine(
     DATABASE_URL,

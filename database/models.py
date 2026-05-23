@@ -21,7 +21,10 @@ Tables:
 from __future__ import annotations
 
 import enum
-from datetime import datetime
+from datetime import datetime, timezone
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 from sqlalchemy import (
     Boolean, Column, DateTime, Enum, Float,
@@ -38,6 +41,22 @@ class Base(DeclarativeBase):
 #  ENUM — user plans
 #  Why enum? Prevents typos — can't accidentally write "busines"
 # ─────────────────────────────────────────────────────────────
+
+class ProcessingStatus(str, enum.Enum):
+    QUEUED = "queued"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    NEEDS_REVIEW = "needs_review"
+
+
+class DocumentType(str, enum.Enum):
+    INVOICE = "invoice"
+    CONTRACT = "contract"
+    RECEIPT = "receipt"
+    REPORT = "report"
+    OTHER = "other"
+
 
 class UserPlan(str, enum.Enum):
     free       = "free"        # 5 files per day (IP-tracked before login)
@@ -69,8 +88,8 @@ class User(Base):
     files_used_month    = Column(Integer, default=0)
     last_reset_date     = Column(DateTime, nullable=True)  # when daily count was last reset
 
-    created_at      = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at      = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at      = Column(DateTime, default=utcnow, nullable=False)
+    updated_at      = Column(DateTime, default=utcnow, onupdate=utcnow)
 
     # Relationships — lets us do user.documents to get all their docs
     documents = relationship("Document", back_populates="user", lazy="select")
@@ -96,7 +115,7 @@ class Session(Base):
     user_id    = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     jti        = Column(String(64), unique=True, index=True, nullable=False)  # JWT ID
     is_revoked = Column(Boolean, default=False, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=utcnow, nullable=False)
     expires_at = Column(DateTime, nullable=False)
 
     user = relationship("User", back_populates="sessions")
@@ -115,11 +134,11 @@ class IPRateLimit(Base):
     id           = Column(Integer, primary_key=True, index=True)
     ip_address   = Column(String(45), unique=True, index=True, nullable=False)  # 45 = max IPv6 length
     request_count = Column(Integer, default=0, nullable=False)
-    first_request = Column(DateTime, default=datetime.utcnow, nullable=False)
-    last_request  = Column(DateTime, default=datetime.utcnow, nullable=False)
+    first_request = Column(DateTime, default=utcnow, nullable=False)
+    last_request  = Column(DateTime, default=utcnow, nullable=False)
 
     # Auto-reset after 24 hours — checked in the rate limit logic
-    window_start  = Column(DateTime, default=datetime.utcnow, nullable=False)
+    window_start  = Column(DateTime, default=utcnow, nullable=False)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -157,7 +176,7 @@ class Document(Base):
     # Retention — anonymous docs deleted after 24hrs, user docs kept longer
     expires_at      = Column(DateTime, nullable=True)
 
-    uploaded_at             = Column(DateTime, default=datetime.utcnow)
+    uploaded_at             = Column(DateTime, default=utcnow)
     processing_started_at   = Column(DateTime, nullable=True)
     processing_completed_at = Column(DateTime, nullable=True)
 
@@ -197,7 +216,7 @@ class PlatformStats(Base):
     id               = Column(Integer, primary_key=True, default=1)
     total_documents  = Column(Integer, default=0)
     confidence_sum   = Column(Float, default=0.0)
-    updated_at       = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at       = Column(DateTime, default=utcnow, onupdate=utcnow)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -215,7 +234,7 @@ class Feedback(Base):
     ip_address  = Column(String(45), nullable=True)
     rating      = Column(Integer, nullable=False)   # 1 = thumbs up, -1 = thumbs down
     comment     = Column(Text, nullable=True)
-    created_at  = Column(DateTime, default=datetime.utcnow)
+    created_at  = Column(DateTime, default=utcnow)
 
     document = relationship("Document", back_populates="feedbacks")
     user     = relationship("User",     back_populates="feedbacks")

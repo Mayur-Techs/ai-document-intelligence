@@ -27,7 +27,7 @@ from auth.core import (
     hash_password,
     verify_password,
 )
-from database.connection import get_db
+from database.connection import get_db_for_fastapi
 from database.models import Session as DBSession, User, UserPlan
 
 router = APIRouter()
@@ -85,7 +85,7 @@ class UserProfile(BaseModel):
 # ─────────────────────────────────────────────────────────────
 
 @router.post("/register", response_model=AuthResponse, status_code=201)
-def register(body: RegisterRequest, db: Session = Depends(get_db)):
+def register(body: RegisterRequest, db: Session = Depends(get_db_for_fastapi)):
     """
     Create a new account.
 
@@ -149,7 +149,7 @@ def register(body: RegisterRequest, db: Session = Depends(get_db)):
 # ─────────────────────────────────────────────────────────────
 
 @router.post("/login", response_model=AuthResponse)
-def login(body: LoginRequest, db: Session = Depends(get_db)):
+def login(body: LoginRequest, db: Session = Depends(get_db_for_fastapi)):
     """
     Log in with email and password. Returns JWT token.
 
@@ -212,7 +212,7 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
 @router.post("/logout")
 def logout(
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db_for_fastapi),
 ):
     """
     Revoke the current JWT token.

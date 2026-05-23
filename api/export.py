@@ -35,7 +35,7 @@ from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from database.connection import get_db
+from database.connection import get_db_for_fastapi
 from database.models import Document, ExtractedField
 
 router = APIRouter(tags=["export"])
@@ -83,7 +83,7 @@ def _line_item_rows(fields) -> list[dict]:
 # ─────────────────────────────────────────────────────────────
 
 @router.get("/documents/{doc_id}/export/csv")
-def export_csv(doc_id: int, db: Session = Depends(get_db)):
+def export_csv(doc_id: int, db: Session = Depends(get_db_for_fastapi)):
     """Download extracted invoice data as a CSV file."""
     doc, fields = _get_doc_and_fields(doc_id, db)
     scalars     = _scalar_rows(fields)
@@ -231,7 +231,7 @@ def _build_excel(doc, scalars: dict, line_items: list[dict]) -> bytes:
 
 
 @router.get("/documents/{doc_id}/export/excel")
-def export_excel(doc_id: int, db: Session = Depends(get_db)):
+def export_excel(doc_id: int, db: Session = Depends(get_db_for_fastapi)):
     """Download extracted invoice data as a formatted Excel (.xlsx) file."""
     doc, fields = _get_doc_and_fields(doc_id, db)
     scalars     = _scalar_rows(fields)
@@ -252,7 +252,7 @@ def export_excel(doc_id: int, db: Session = Depends(get_db)):
 # ─────────────────────────────────────────────────────────────
 
 @router.get("/documents/{doc_id}/export/email")
-def export_email(doc_id: int, to: str, db: Session = Depends(get_db)):
+def export_email(doc_id: int, to: str, db: Session = Depends(get_db_for_fastapi)):
     """
     Send the Excel file to the given email address.
     Requires these env vars:
@@ -322,7 +322,7 @@ def export_email(doc_id: int, to: str, db: Session = Depends(get_db)):
 # ─────────────────────────────────────────────────────────────
 
 @router.get("/stats")
-def get_platform_stats(db: Session = Depends(get_db)):
+def get_platform_stats(db: Session = Depends(get_db_for_fastapi)):
     """
     Returns live platform-wide stats for the trust counter widget.
     Response:
