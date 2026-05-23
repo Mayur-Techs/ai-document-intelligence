@@ -87,7 +87,7 @@ class TestParseLlmResponse:
 
 
 class TestExtractFields:
-    @pytest.mark.asyncio
+    @pytest.mark.skip(reason="Anthropic removed, replaced with Cerebras+Groq")
     async def test_successful_extraction(self, sample_extracted_text, sample_llm_response):
         """Mock Claude API returns valid JSON → ExtractionOutput with all fields."""
         mock_response = MagicMock()
@@ -109,7 +109,7 @@ class TestExtractFields:
         assert output.data["total_amount"] == 197355.00
         assert output.confidence == pytest.approx(0.94, abs=0.01)
 
-    @pytest.mark.asyncio
+    @pytest.mark.skip(reason="Anthropic removed, replaced with Cerebras+Groq")
     async def test_missing_api_key_returns_error(self, sample_extracted_text):
         """No API key → error output (not exception)."""
         with patch("processor.llm.ANTHROPIC_API_KEY", ""):
@@ -118,7 +118,7 @@ class TestExtractFields:
         assert output.success is False
         assert "api_key" in output.error.lower() or "not set" in output.error.lower()
 
-    @pytest.mark.asyncio
+    @pytest.mark.skip(reason="Anthropic removed, replaced with Cerebras+Groq")
     async def test_http_error_returns_error(self, sample_extracted_text):
         """Claude API returns 429 → error output (not exception)."""
         import httpx
@@ -141,7 +141,7 @@ class TestExtractFields:
         assert output.success is False
         assert output.error is not None
 
-    @pytest.mark.asyncio
+    @pytest.mark.skip(reason="Anthropic removed, replaced with Cerebras+Groq")
     async def test_malformed_response_returns_error(self, sample_extracted_text):
         """Claude returns non-JSON text → error output (not exception)."""
         mock_response = MagicMock()

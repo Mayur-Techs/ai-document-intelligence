@@ -219,7 +219,6 @@ def logout(
     The token still exists but is_revoked=True so get_current_user
     rejects it on every future request.
     """
-    from fastapi.security import HTTPAuthorizationCredentials
     # We need to get the jti from the token — it's in the DB session
     # We find it by user_id + not revoked + most recent
     session = db.query(DBSession).filter(

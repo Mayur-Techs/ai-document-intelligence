@@ -1,11 +1,31 @@
+"""
+database/models.py
+───────────────────
+All SQLAlchemy table definitions in one place.
+
+Why SQLAlchemy?
+  - We write Python classes, it generates SQL automatically
+  - Works with PostgreSQL on Render and SQLite locally
+  - One place to change a table — affects the whole app
+
+Tables:
+  users          — accounts (email + hashed password + plan)
+  sessions       — active JWT tokens (for logout/revocation)
+  ip_rate_limits — anonymous user request tracking by IP
+  documents      — PDF uploads and extraction results
+  extracted_fields — individual fields per document
+  platform_stats — global counter
+  feedback       — user ratings on extractions
+"""
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from enum import Enum as PyEnum
+import enum
+from datetime import datetime
 
 from sqlalchemy import (
-    Boolean, Column, DateTime, Float, Integer,
-    String, Text, ForeignKey, JSON,
+    Boolean, Column, DateTime, Enum, Float,
+    ForeignKey, Integer, String, Text, func,
 )
 from sqlalchemy.orm import DeclarativeBase, relationship
 
@@ -14,150 +34,188 @@ class Base(DeclarativeBase):
     pass
 
 
-class ProcessingStatus(PyEnum):
-    QUEUED = "queued"
-    PROCESSING = "processing"
-    COMPLETED = "completed"
-    FAILED = "failed"
+# ─────────────────────────────────────────────────────────────
+#  ENUM — user plans
+#  Why enum? Prevents typos — can't accidentally write "busines"
+# ─────────────────────────────────────────────────────────────
+
+class UserPlan(str, enum.Enum):
+    free       = "free"        # 5 files per day (IP-tracked before login)
+    starter    = "starter"     # 100 files per month
+    business   = "business"    # 500 files per month
+    enterprise = "enterprise"  # unlimited
+    admin      = "admin"       # internal use
 
 
-class DocumentType(PyEnum):
-    INVOICE = "invoice"
-    CONTRACT = "contract"
-    RECEIPT = "receipt"
-    REPORT = "report"
-    OTHER = "other"
+# ─────────────────────────────────────────────────────────────
+#  TABLE: users
+#  One row per registered account
+# ─────────────────────────────────────────────────────────────
 
-
-class Document(Base):
-    """
-    Represents an uploaded file — the raw input.
-
-    WHY separate Document from InvoiceExtraction?
-    A document is always a document regardless of what we extract from it.
-    Today we extract invoices. Tomorrow we extract contracts or resumes.
-    The document table never changes. Only the extraction tables grow.
-    Single Responsibility: this table tracks files, not fields.
-
-    Status machine: pending → processing → completed | failed
-    """
-    __tablename__ = "documents"
+class User(Base):
+    __tablename__ = "users"
 
     id              = Column(Integer, primary_key=True, index=True)
-    file_name       = Column(String(500), nullable=False)           # original filename from user
-    file_path       = Column(String(1000), nullable=False)          # path on disk (UUID-named)
-    file_size_bytes = Column(Integer)
-    mime_type       = Column(String(100), default="application/pdf")
-    document_type   = Column(String(50), default="invoice")         # invoice | receipt | contract | other
-    status          = Column(String(20), default="queued", index=True)
-    # status values: queued | processing | completed | failed
+    email           = Column(String(255), unique=True, index=True, nullable=False)
+    hashed_password = Column(String(255), nullable=False)
+    full_name       = Column(String(255), nullable=True)
+    company_name    = Column(String(255), nullable=True)
+    plan            = Column(Enum(UserPlan), default=UserPlan.free, nullable=False)
+    is_active       = Column(Boolean, default=True, nullable=False)
+    is_verified     = Column(Boolean, default=False, nullable=False)  # email verified
 
+    # Usage tracking
+    files_used_today    = Column(Integer, default=0)
+    files_used_month    = Column(Integer, default=0)
+    last_reset_date     = Column(DateTime, nullable=True)  # when daily count was last reset
+
+    created_at      = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at      = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships — lets us do user.documents to get all their docs
+    documents = relationship("Document", back_populates="user", lazy="select")
+    sessions  = relationship("Session",  back_populates="user", lazy="select")
+    feedbacks = relationship("Feedback", back_populates="user", lazy="select")
+
+    def __repr__(self):
+        return f"<User {self.email} plan={self.plan}>"
+
+
+# ─────────────────────────────────────────────────────────────
+#  TABLE: sessions
+#  Why store sessions if using JWT?
+#  JWT is stateless — you can't "log out" a JWT without a blocklist.
+#  We store the JWT token ID (jti) here. On logout we mark it revoked.
+#  Every request checks: is this token ID in the revoked list?
+# ─────────────────────────────────────────────────────────────
+
+class Session(Base):
+    __tablename__ = "sessions"
+
+    id         = Column(Integer, primary_key=True, index=True)
+    user_id    = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    jti        = Column(String(64), unique=True, index=True, nullable=False)  # JWT ID
+    is_revoked = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+
+    user = relationship("User", back_populates="sessions")
+
+
+# ─────────────────────────────────────────────────────────────
+#  TABLE: ip_rate_limits
+#  Tracks anonymous users (not logged in) by IP address.
+#  Rule: 5 free extractions per IP per 24 hours.
+#  After that — show signup prompt.
+# ─────────────────────────────────────────────────────────────
+
+class IPRateLimit(Base):
+    __tablename__ = "ip_rate_limits"
+
+    id           = Column(Integer, primary_key=True, index=True)
+    ip_address   = Column(String(45), unique=True, index=True, nullable=False)  # 45 = max IPv6 length
+    request_count = Column(Integer, default=0, nullable=False)
+    first_request = Column(DateTime, default=datetime.utcnow, nullable=False)
+    last_request  = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    # Auto-reset after 24 hours — checked in the rate limit logic
+    window_start  = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+# ─────────────────────────────────────────────────────────────
+#  TABLE: documents
+#  Same as before + user_id foreign key added
+# ─────────────────────────────────────────────────────────────
+
+class Document(Base):
+    __tablename__ = "documents"
+
+    id           = Column(Integer, primary_key=True, index=True)
+
+    # Who owns this document — NULL means anonymous (IP user)
+    user_id      = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    ip_address   = Column(String(45), nullable=True)  # set for anonymous uploads
+
+    file_name    = Column(String(500), nullable=False)
+    file_path    = Column(String(500), nullable=False)
+    file_size_bytes = Column(Integer, nullable=True)
+    document_type   = Column(String(50), default="invoice")
+
+    # Extraction results
+    status          = Column(String(20), default="queued")
     page_count      = Column(Integer, nullable=True)
-    char_count      = Column(Integer, nullable=True)               # chars extracted from PDF
-    raw_text        = Column(Text, nullable=True)                   # full extracted text (for re-processing)
-    error_message   = Column(Text, nullable=True)
-
-    # AI-extracted summary fields (fast querying without joining extracted_fields)
+    char_count      = Column(Integer, nullable=True)
     vendor_name     = Column(String(500), nullable=True)
     invoice_number  = Column(String(200), nullable=True)
     invoice_date    = Column(String(50), nullable=True)
     due_date        = Column(String(50), nullable=True)
     total_amount    = Column(Float, nullable=True)
-    currency        = Column(String(10), nullable=True, default="INR")
-    ai_confidence   = Column(Float, nullable=True)                  # 0.0–1.0
+    currency        = Column(String(10), default="INR")
+    ai_confidence   = Column(Float, nullable=True)
+    error_message   = Column(Text, nullable=True)
 
-    uploaded_at              = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    processing_started_at    = Column(DateTime, nullable=True)
-    processing_completed_at  = Column(DateTime, nullable=True)
+    # Retention — anonymous docs deleted after 24hrs, user docs kept longer
+    expires_at      = Column(DateTime, nullable=True)
 
-    # Relationships
-    extraction = relationship("InvoiceExtraction", back_populates="document", uselist=False)
-    fields = relationship("ExtractedField", back_populates="document", cascade="all, delete-orphan")
+    uploaded_at             = Column(DateTime, default=datetime.utcnow)
+    processing_started_at   = Column(DateTime, nullable=True)
+    processing_completed_at = Column(DateTime, nullable=True)
 
-    def __repr__(self) -> str:
-        return f"<Document id={self.id} name={self.file_name!r} status={self.status}>"
+    user     = relationship("User",           back_populates="documents")
+    fields   = relationship("ExtractedField", back_populates="document",
+                            cascade="all, delete-orphan")
+    feedbacks = relationship("Feedback",      back_populates="document")
 
 
-class InvoiceExtraction(Base):
-    """
-    Structured fields extracted from an invoice document via Claude API.
-
-    WHY JSONB for line_items?
-    Line items vary per invoice — 1 line or 100 lines, different fields.
-    Storing as JSON avoids an entire separate table for a variable-length array.
-    For analytics, PostgreSQL JSONB supports indexing and querying into JSON.
-
-    WHY confidence_score?
-    Claude sometimes hallucinates or admits uncertainty.
-    The prompt asks Claude to score its own confidence 0-100.
-    Low-confidence extractions (<60) should be flagged for human review.
-    """
-    __tablename__ = "invoice_extractions"
-
-    id               = Column(Integer, primary_key=True, index=True)
-    document_id      = Column(Integer, ForeignKey("documents.id"), unique=True, nullable=False)
-
-    # Core invoice fields
-    invoice_number   = Column(String(200))
-    invoice_date     = Column(String(50))    # stored as string — date formats vary wildly
-    due_date         = Column(String(50))
-    currency         = Column(String(10), default="INR")
-
-    # Parties
-    vendor_name      = Column(String(500))
-    vendor_address   = Column(Text)
-    vendor_gstin     = Column(String(20))    # Indian GST number — critical for Indian invoices
-    buyer_name       = Column(String(500))
-    buyer_address    = Column(Text)
-    buyer_gstin      = Column(String(20))
-
-    # Financials
-    subtotal         = Column(Float)
-    tax_amount       = Column(Float)
-    discount_amount  = Column(Float)
-    total_amount     = Column(Float)
-
-    # Line items — JSON array of {description, quantity, unit_price, total}
-    line_items       = Column(JSON, default=list)
-
-    # Extraction metadata
-    confidence_score = Column(Integer)       # 0-100, Claude's self-assessed confidence
-    model_used       = Column(String(100))   # "claude-sonnet-4-6" etc
-    tokens_used      = Column(Integer)       # for cost tracking
-    raw_llm_response = Column(Text)          # full Claude response — for debugging extractions
-    extracted_at     = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-
-    document = relationship("Document", back_populates="extraction")
-
-    def __repr__(self) -> str:
-        return (
-            f"<InvoiceExtraction id={self.id} "
-            f"invoice={self.invoice_number!r} total={self.total_amount}>"
-        )
-
+# ─────────────────────────────────────────────────────────────
+#  TABLE: extracted_fields
+#  Unchanged from before — one row per extracted field
+# ─────────────────────────────────────────────────────────────
 
 class ExtractedField(Base):
-    """
-    Generic key-value store for extracted document fields.
-    Flexible: works for any document type without schema changes.
-    Coexists with InvoiceExtraction (which stores structured invoice data).
-
-    WHY both tables?
-    InvoiceExtraction = fast analytics (query total_amount, vendor_name directly)
-    ExtractedField    = flexible storage (any document type, any field name)
-    Pipeline writes to both — InvoiceExtraction for invoices, ExtractedField for all types.
-    """
     __tablename__ = "extracted_fields"
 
     id          = Column(Integer, primary_key=True, index=True)
-    document_id = Column(Integer, ForeignKey("documents.id"), nullable=False, index=True)
-    field_name  = Column(String(200), nullable=False)
+    document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE"), nullable=False)
+    field_name  = Column(String(100), nullable=False)
     field_value = Column(Text, nullable=True)
-    field_type  = Column(String(50), default="string")  # string | number | date | list_item | object
+    field_type  = Column(String(50), default="string")
     confidence  = Column(Float, nullable=True)
     is_verified = Column(Boolean, default=False)
 
     document = relationship("Document", back_populates="fields")
 
-    def __repr__(self) -> str:
-        return f"<ExtractedField {self.field_name}={self.field_value!r}>"
+
+# ─────────────────────────────────────────────────────────────
+#  TABLE: platform_stats
+#  One row only (id=1) — global counter updated after every extraction
+# ─────────────────────────────────────────────────────────────
+
+class PlatformStats(Base):
+    __tablename__ = "platform_stats"
+
+    id               = Column(Integer, primary_key=True, default=1)
+    total_documents  = Column(Integer, default=0)
+    confidence_sum   = Column(Float, default=0.0)
+    updated_at       = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+# ─────────────────────────────────────────────────────────────
+#  TABLE: feedback
+#  Thumbs up/down + optional comment on each extraction
+#  We use this weekly to improve prompts
+# ─────────────────────────────────────────────────────────────
+
+class Feedback(Base):
+    __tablename__ = "feedback"
+
+    id          = Column(Integer, primary_key=True, index=True)
+    document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE"), nullable=False)
+    user_id     = Column(Integer, ForeignKey("users.id",     ondelete="SET NULL"), nullable=True)
+    ip_address  = Column(String(45), nullable=True)
+    rating      = Column(Integer, nullable=False)   # 1 = thumbs up, -1 = thumbs down
+    comment     = Column(Text, nullable=True)
+    created_at  = Column(DateTime, default=datetime.utcnow)
+
+    document = relationship("Document", back_populates="feedbacks")
+    user     = relationship("User",     back_populates="feedbacks")
