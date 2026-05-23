@@ -1,12 +1,17 @@
 import urllib.request
+import json
 
 headers = {"User-Agent": "Mozilla/5.0"}
-req = urllib.request.Request("https://raw.githubusercontent.com/Mayur-Techs/docai-frontend/main/demo.html", headers=headers)
+url = "https://api.github.com/repos/Mayur-Techs/ai-document-intelligence/actions/runs"
+req = urllib.request.Request(url, headers=headers)
 with urllib.request.urlopen(req) as response:
-    content = response.read().decode('utf-8')
-with open("scratch/demo.html", "w", encoding="utf-8") as f:
-    f.write(content)
-print("Saved to scratch/demo.html successfully!")
+    data = json.loads(response.read().decode('utf-8'))
 
+for run in data.get('workflow_runs', [])[:5]:
+    print(f"Workflow: {run['name']}")
+    print(f"Commit: {run['head_commit']['message'][:50]}...")
+    print(f"Status: {run['status']} | Conclusion: {run['conclusion']}")
+    print(f"URL: {run['html_url']}")
+    print("-" * 40)
 
 
