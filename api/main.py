@@ -42,6 +42,7 @@ async def lifespan(app: FastAPI):  # type: ignore[type-arg]
 
 app = FastAPI(
     title="AI Document Intelligence API",
+    debug=True,
     description=(
         "Upload PDF documents — invoices, contracts, receipts. "
         "Claude Sonnet extracts structured fields automatically. "

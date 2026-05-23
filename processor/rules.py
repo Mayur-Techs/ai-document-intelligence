@@ -416,10 +416,14 @@ def extract_from_tables(tables: list[list[list[str]]]) -> dict[str, Any]:
             if _is_summary_row(desc, row):
                 # Capture grand total from summary row
                 desc_lower = desc.lower()
-                if (amt_col is not None and amt_col < len(row) and any(
-                    k in desc_lower
-                    for k in ["grand total", "total amount", "net payable", "total payable"]
-                )):
+                if (
+                    amt_col is not None
+                    and amt_col < len(row)
+                    and any(
+                        k in desc_lower
+                        for k in ["grand total", "total amount", "net payable", "total payable"]
+                    )
+                ):
                     v = _parse_amount(str(row[amt_col] or ""))
                     if v > 0 and not data.get("total_amount"):
                         data["total_amount"] = v
