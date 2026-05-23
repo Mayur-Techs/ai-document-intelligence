@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+from auth.routes import router as auth_router
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -53,7 +54,6 @@ app = FastAPI(
 )
 
 
-from fastapi.middleware.cors import CORSMiddleware
 
 app.add_middleware(
     CORSMiddleware,
@@ -65,6 +65,7 @@ app.add_middleware(
 )
 
 app.include_router(export_router)
+app.include_router(auth_router, prefix="/auth", tags=["Authentication"])
 app.include_router(documents_router, prefix="/api/v1")
 
 
