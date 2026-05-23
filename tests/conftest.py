@@ -12,6 +12,7 @@ Fixtures:
   sample_llm_response   — realistic Claude API JSON response
   sample_document_data  — clean document dict for DB insertion
 """
+
 from __future__ import annotations
 
 import pytest
@@ -101,7 +102,7 @@ def sample_llm_response() -> dict:
   "subtotal": 167250.00,
   "tax_amount": 30105.00,
   "confidence_score": 94
-}"""
+}""",
             }
         ]
     }

@@ -22,7 +22,6 @@ Why 24-hour windows and not calendar day?
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Optional
 
 from fastapi import HTTPException, Request, status
 from sqlalchemy.orm import Session
@@ -34,14 +33,14 @@ from database.models import IPRateLimit, User, UserPlan
 # ─────────────────────────────────────────────────────────────
 
 PLAN_LIMITS = {
-    UserPlan.free:       {"files": 20,  "window_hours": 24},
-    UserPlan.starter:    {"files": 100, "window_hours": 720},   # 30 days
-    UserPlan.business:   {"files": 500, "window_hours": 720},
+    UserPlan.free: {"files": 20, "window_hours": 24},
+    UserPlan.starter: {"files": 100, "window_hours": 720},  # 30 days
+    UserPlan.business: {"files": 500, "window_hours": 720},
     UserPlan.enterprise: {"files": 999999, "window_hours": 720},
-    UserPlan.admin:      {"files": 999999, "window_hours": 24},
+    UserPlan.admin: {"files": 999999, "window_hours": 24},
 }
 
-IP_LIMIT        = 5    # anonymous users: 5 files per 24 hours
+IP_LIMIT = 5  # anonymous users: 5 files per 24 hours
 IP_WINDOW_HOURS = 24
 
 
@@ -49,6 +48,7 @@ IP_WINDOW_HOURS = 24
 #  Get real IP address
 #  Render sits behind a proxy — the real IP is in X-Forwarded-For header
 # ─────────────────────────────────────────────────────────────
+
 
 def get_client_ip(request: Request) -> str:
     """
@@ -67,6 +67,7 @@ def get_client_ip(request: Request) -> str:
 #  IP rate limiting — for anonymous users
 # ─────────────────────────────────────────────────────────────
 
+
 def check_ip_rate_limit(ip: str, db: Session) -> None:
     """
     Check if this IP has exceeded the anonymous limit.
@@ -76,9 +77,7 @@ def check_ip_rate_limit(ip: str, db: Session) -> None:
     Raises 429 if limit exceeded.
     """
     now = datetime.now(timezone.utc)
-    record = db.query(IPRateLimit).filter(
-        IPRateLimit.ip_address == ip
-    ).first()
+    record = db.query(IPRateLimit).filter(IPRateLimit.ip_address == ip).first()
 
     if not record:
         # First time this IP visits — create record
@@ -91,20 +90,22 @@ def check_ip_rate_limit(ip: str, db: Session) -> None:
         )
         db.add(record)
         db.commit()
-        return   # first request always allowed
+        return  # first request always allowed
 
     # Check if 24-hour window has passed — if so, reset
     window_age = now - record.window_start.replace(tzinfo=timezone.utc)
     if window_age > timedelta(hours=IP_WINDOW_HOURS):
         record.request_count = 1
-        record.window_start  = now
-        record.last_request  = now
+        record.window_start = now
+        record.last_request = now
         db.commit()
-        return   # reset and allow
+        return  # reset and allow
 
     # Within window — check count
     if record.request_count >= IP_LIMIT:
-        reset_at = record.window_start.replace(tzinfo=timezone.utc) + timedelta(hours=IP_WINDOW_HOURS)
+        reset_at = record.window_start.replace(tzinfo=timezone.utc) + timedelta(
+            hours=IP_WINDOW_HOURS
+        )
         minutes_left = int((reset_at - now).total_seconds() / 60)
 
         raise HTTPException(
@@ -119,13 +120,14 @@ def check_ip_rate_limit(ip: str, db: Session) -> None:
 
     # Under limit — increment and allow
     record.request_count += 1
-    record.last_request   = now
+    record.last_request = now
     db.commit()
 
 
 # ─────────────────────────────────────────────────────────────
 #  User plan limit — for logged-in users
 # ─────────────────────────────────────────────────────────────
+
 
 def check_user_plan_limit(user: User, db: Session) -> None:
     """
@@ -134,7 +136,7 @@ def check_user_plan_limit(user: User, db: Session) -> None:
 
     Raises 429 if limit exceeded with upgrade prompt.
     """
-    now    = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc)
     limits = PLAN_LIMITS.get(user.plan, PLAN_LIMITS[UserPlan.free])
 
     # Check if window needs resetting
@@ -146,7 +148,7 @@ def check_user_plan_limit(user: User, db: Session) -> None:
             # Reset the counter
             user.files_used_today = 0
             user.files_used_month = 0
-            user.last_reset_date  = now
+            user.last_reset_date = now
             db.commit()
 
     # First ever upload
@@ -158,8 +160,8 @@ def check_user_plan_limit(user: User, db: Session) -> None:
 
     if current_usage >= limits["files"]:
         upgrade_map = {
-            UserPlan.free:     "starter",
-            UserPlan.starter:  "business",
+            UserPlan.free: "starter",
+            UserPlan.starter: "business",
             UserPlan.business: "enterprise",
         }
         next_plan = upgrade_map.get(user.plan, "enterprise")
@@ -176,8 +178,8 @@ def check_user_plan_limit(user: User, db: Session) -> None:
         )
 
     # Increment usage
-    user.files_used_today  = (user.files_used_today or 0) + 1
-    user.files_used_month  = (user.files_used_month or 0) + 1
+    user.files_used_today = (user.files_used_today or 0) + 1
+    user.files_used_month = (user.files_used_month or 0) + 1
     db.commit()
 
 
@@ -186,10 +188,11 @@ def check_user_plan_limit(user: User, db: Session) -> None:
 #  Handles both anonymous and logged-in users automatically
 # ─────────────────────────────────────────────────────────────
 
+
 def enforce_rate_limit(
     request: Request,
     db: Session,
-    current_user: Optional[User] = None,
+    current_user: User | None = None,
 ) -> str:
     """
     Single function to call on every upload.

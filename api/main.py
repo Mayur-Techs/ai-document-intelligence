@@ -8,21 +8,21 @@ Follows identical patterns to System 1 (lead-gen-automation):
   - versioned routes at /api/v1/
   - GET /health for Render + Docker healthchecks
 """
+
 from __future__ import annotations
 
 import logging
 import os
-from auth.routes import router as auth_router
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from database.connection import init_db
-from api.routes.documents import router as documents_router
-from utils.logger import setup_logging
-
 from api.export import router as export_router
+from api.routes.documents import router as documents_router
+from auth.routes import router as auth_router
+from database.connection import init_db
+from utils.logger import setup_logging
 
 setup_logging(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("docai.api")
@@ -54,20 +54,18 @@ app = FastAPI(
 )
 
 
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=False,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
-    expose_headers=["Content-Disposition"],   # ← critical for file downloads
+    expose_headers=["Content-Disposition"],  # ← critical for file downloads
 )
 
 app.include_router(export_router)
 app.include_router(auth_router, prefix="/auth", tags=["Authentication"])
 app.include_router(documents_router, prefix="/api/v1")
-
 
 
 @app.get("/health")

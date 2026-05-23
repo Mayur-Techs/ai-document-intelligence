@@ -9,6 +9,7 @@ New in this version:
   extract_tables() — returns raw table data for processor/rules.py
   to parse line items directly from table structure before any AI call.
 """
+
 from __future__ import annotations
 
 import logging
@@ -45,7 +46,10 @@ def truncate_text(text: str, max_chars: int = MAX_TEXT_CHARS) -> str:
     if len(text) <= max_chars:
         return text
     cutoff = max_chars - 80
-    return text[:cutoff] + f"\n\n[truncated: original length {len(text)} chars, showing first {cutoff}]"
+    return (
+        text[:cutoff]
+        + f"\n\n[truncated: original length {len(text)} chars, showing first {cutoff}]"
+    )
 
 
 def extract_text(file_path: str | Path) -> ExtractionResult:
@@ -56,14 +60,26 @@ def extract_text(file_path: str | Path) -> ExtractionResult:
     path = Path(file_path)
 
     if not path.exists():
-        return ExtractionResult(text="", page_count=0, raw_length=0,
-                                method="failed", truncated=False, success=False,
-                                error=f"File not found: {path}")
+        return ExtractionResult(
+            text="",
+            page_count=0,
+            raw_length=0,
+            method="failed",
+            truncated=False,
+            success=False,
+            error=f"File not found: {path}",
+        )
 
     if path.suffix.lower() != ".pdf":
-        return ExtractionResult(text="", page_count=0, raw_length=0,
-                                method="failed", truncated=False, success=False,
-                                error=f"Not a PDF: {path.suffix}")
+        return ExtractionResult(
+            text="",
+            page_count=0,
+            raw_length=0,
+            method="failed",
+            truncated=False,
+            success=False,
+            error=f"Not a PDF: {path.suffix}",
+        )
 
     result = _extract_with_pdfplumber(path)
     if result.method != "failed" and len(result.text.strip()) > 50:
@@ -76,8 +92,12 @@ def extract_text(file_path: str | Path) -> ExtractionResult:
 
     if result.success and len(result.text.strip()) <= 50:
         return ExtractionResult(
-            text="", page_count=result.page_count, raw_length=0,
-            method="failed", truncated=False, success=False,
+            text="",
+            page_count=result.page_count,
+            raw_length=0,
+            method="failed",
+            truncated=False,
+            success=False,
             error="no text layer found — PDF may be image-only (scanned)",
         )
     return result
@@ -125,9 +145,15 @@ def extract_tables(file_path: str | Path) -> list[list[list[str]]]:
 def _extract_with_pdfplumber(path: Path) -> ExtractionResult:
     try:
         if pdfplumber is None:
-            return ExtractionResult(text="", page_count=0, raw_length=0,
-                                    method="failed", truncated=False, success=False,
-                                    error="pdfplumber not installed")
+            return ExtractionResult(
+                text="",
+                page_count=0,
+                raw_length=0,
+                method="failed",
+                truncated=False,
+                success=False,
+                error="pdfplumber not installed",
+            )
 
         full_text_parts: list[str] = []
         page_count = 0
@@ -150,21 +176,39 @@ def _extract_with_pdfplumber(path: Path) -> ExtractionResult:
         raw = "\n".join(full_text_parts)
         truncated = len(raw) > MAX_TEXT_CHARS
         text = raw[:MAX_TEXT_CHARS] if truncated else raw
-        return ExtractionResult(text=text, page_count=page_count,
-                                raw_length=len(raw), method="pdfplumber", truncated=truncated)
+        return ExtractionResult(
+            text=text,
+            page_count=page_count,
+            raw_length=len(raw),
+            method="pdfplumber",
+            truncated=truncated,
+        )
 
     except Exception as exc:
         logger.warning("pdfplumber failed for %s: %s", path.name, exc)
-        return ExtractionResult(text="", page_count=0, raw_length=0,
-                                method="failed", truncated=False, success=False, error=str(exc))
+        return ExtractionResult(
+            text="",
+            page_count=0,
+            raw_length=0,
+            method="failed",
+            truncated=False,
+            success=False,
+            error=str(exc),
+        )
 
 
 def _extract_with_pymupdf(path: Path) -> ExtractionResult:
     try:
         if fitz is None:
-            return ExtractionResult(text="", page_count=0, raw_length=0,
-                                    method="failed", truncated=False, success=False,
-                                    error="PyMuPDF not installed")
+            return ExtractionResult(
+                text="",
+                page_count=0,
+                raw_length=0,
+                method="failed",
+                truncated=False,
+                success=False,
+                error="PyMuPDF not installed",
+            )
 
         full_text_parts: list[str] = []
         page_count = 0
@@ -179,10 +223,22 @@ def _extract_with_pymupdf(path: Path) -> ExtractionResult:
         raw = "\n".join(full_text_parts)
         truncated = len(raw) > MAX_TEXT_CHARS
         text = raw[:MAX_TEXT_CHARS] if truncated else raw
-        return ExtractionResult(text=text, page_count=page_count,
-                                raw_length=len(raw), method="pymupdf", truncated=truncated)
+        return ExtractionResult(
+            text=text,
+            page_count=page_count,
+            raw_length=len(raw),
+            method="pymupdf",
+            truncated=truncated,
+        )
 
     except Exception as exc:
         logger.error("PyMuPDF also failed for %s: %s", path.name, exc)
-        return ExtractionResult(text="", page_count=0, raw_length=0,
-                                method="failed", truncated=False, success=False, error=str(exc))
+        return ExtractionResult(
+            text="",
+            page_count=0,
+            raw_length=0,
+            method="failed",
+            truncated=False,
+            success=False,
+            error=str(exc),
+        )

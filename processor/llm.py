@@ -15,6 +15,7 @@ WHY only send MISSING fields to AI?
   Only ask AI about vendor_name and line_items.
   200-token prompt vs 2000-token full-document = 10x cheaper, 3x faster.
 """
+
 from __future__ import annotations
 
 import json
@@ -32,8 +33,7 @@ logger = logging.getLogger("docai.processor.llm")
 GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("EXTRACTION_MODEL", "gemini-1.5-flash")
 GEMINI_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    "{model}:generateContent?key={key}"
+    "https://generativelanguage.googleapis.com/v1beta/models/" "{model}:generateContent?key={key}"
 )
 
 
@@ -92,6 +92,7 @@ def build_prompt(
     missing_fields: list[str] | None = None,
 ) -> str:
     from parser.extractor import truncate_text
+
     safe_text = truncate_text(text, max_chars=6000)
 
     if missing_fields:
@@ -138,11 +139,16 @@ def parse_llm_response(raw_text: str) -> ExtractionOutput:
             try:
                 parsed = json.loads(match.group())
             except json.JSONDecodeError:
-                return ExtractionOutput(success=False, data={}, confidence=None,
-                                        error=f"JSON parse failed: {raw[:100]!r}")
+                return ExtractionOutput(
+                    success=False,
+                    data={},
+                    confidence=None,
+                    error=f"JSON parse failed: {raw[:100]!r}",
+                )
         else:
-            return ExtractionOutput(success=False, data={}, confidence=None,
-                                    error=f"No JSON in response: {raw[:100]!r}")
+            return ExtractionOutput(
+                success=False, data={}, confidence=None, error=f"No JSON in response: {raw[:100]!r}"
+            )
 
     try:
         fields = InvoiceFields.model_validate(parsed)
@@ -150,8 +156,9 @@ def parse_llm_response(raw_text: str) -> ExtractionOutput:
         return ExtractionOutput(success=False, data={}, confidence=None, error=str(exc))
 
     confidence = fields.confidence_score / 100.0 if fields.confidence_score else None
-    return ExtractionOutput(success=True, data=fields.model_dump(exclude_none=True),
-                            confidence=confidence)
+    return ExtractionOutput(
+        success=True, data=fields.model_dump(exclude_none=True), confidence=confidence
+    )
 
 
 async def _call_gemini(prompt: str, client: httpx.AsyncClient | None = None) -> tuple[str, int]:
@@ -201,13 +208,14 @@ async def extract_fields(
     """
     if not GEMINI_API_KEY:
         return ExtractionOutput(
-            success=False, data={}, confidence=None,
+            success=False,
+            data={},
+            confidence=None,
             error="GEMINI_API_KEY not set. Get free key at aistudio.google.com",
         )
 
     if not text.strip():
-        return ExtractionOutput(success=False, data={}, confidence=None,
-                                error="Empty text")
+        return ExtractionOutput(success=False, data={}, confidence=None, error="Empty text")
 
     if missing_fields:
         logger.info("AI filling %d missing fields: %s", len(missing_fields), missing_fields)
@@ -216,9 +224,14 @@ async def extract_fields(
     raw, tokens = await _call_gemini(prompt)
 
     if not raw:
-        return ExtractionOutput(success=False, data={}, confidence=None,
-                                model_used=GEMINI_MODEL, tokens_used=tokens,
-                                error="Gemini returned empty response")
+        return ExtractionOutput(
+            success=False,
+            data={},
+            confidence=None,
+            model_used=GEMINI_MODEL,
+            tokens_used=tokens,
+            error="Gemini returned empty response",
+        )
 
     output = parse_llm_response(raw)
     output.model_used = GEMINI_MODEL

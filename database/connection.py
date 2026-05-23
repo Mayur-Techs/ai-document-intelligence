@@ -22,7 +22,7 @@ if DATABASE_URL.startswith("postgres://"):
 engine = create_engine(
     DATABASE_URL,
     echo=False,
-    pool_pre_ping=True,   # verify connection health before use
+    pool_pre_ping=True,  # verify connection health before use
     pool_size=5,
     max_overflow=10,
 )

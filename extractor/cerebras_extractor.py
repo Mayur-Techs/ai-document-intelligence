@@ -22,8 +22,6 @@ import json
 import logging
 import os
 import time
-import traceback
-from typing import Optional
 
 import pdfplumber
 from cerebras.cloud.sdk import Cerebras
@@ -40,6 +38,7 @@ MODEL = "llama-3.3-70b"
 #  PDF text extraction  (local, no API)
 # ─────────────────────────────────────────────────────────────
 
+
 def extract_text_from_pdf(pdf_bytes: bytes) -> str:
     """Pull text from every page using pdfplumber. No API call needed."""
     try:
@@ -49,9 +48,7 @@ def extract_text_from_pdf(pdf_bytes: bytes) -> str:
                 text = page.extract_text() or ""
                 for table in page.extract_tables():
                     for row in table:
-                        row_text = "  |  ".join(
-                            str(c).strip() if c else "" for c in row
-                        )
+                        row_text = "  |  ".join(str(c).strip() if c else "" for c in row)
                         if row_text.strip(" |"):
                             text += "\n" + row_text
                 pages.append(f"--- PAGE {i} ---\n{text}")
@@ -67,10 +64,11 @@ def extract_text_from_pdf(pdf_bytes: bytes) -> str:
 #  Cerebras call
 # ─────────────────────────────────────────────────────────────
 
+
 def _get_client() -> Cerebras:
     key = os.getenv("CEREBRAS_API_KEY")
     if not key:
-        raise EnvironmentError(
+        raise OSError(
             "CEREBRAS_API_KEY not set. "
             "Free key at https://cloud.cerebras.ai — no credit card needed."
         )
@@ -82,12 +80,12 @@ def _call_cerebras(
     page_count: int,
     char_count: int,
     max_retries: int = 2,
-) -> Optional[dict]:
+) -> dict | None:
     if not text or len(text.strip()) < 50:
         logger.error("Text too short (%d chars) — PDF may be image-only", len(text))
         return None
 
-    client      = _get_client()
+    _get_client()
     user_prompt = build_extraction_prompt(page_count, char_count)
 
     messages = [
@@ -95,9 +93,7 @@ def _call_cerebras(
         {
             "role": "user",
             "content": (
-                f"{user_prompt}\n\n"
-                f"Invoice text extracted from PDF:\n\n"
-                f"{text[:12000]}"
+                f"{user_prompt}\n\n" f"Invoice text extracted from PDF:\n\n" f"{text[:12000]}"
             ),
         },
     ]
@@ -120,7 +116,7 @@ def _call_cerebras(
                 continue
 
             raw_data = json.loads(raw)
-            result   = sanitize(raw_data)
+            result = sanitize(raw_data)
             logger.info(
                 "[cerebras] OK — confidence=%.2f  vendor=%s  invoice=%s  total=%s",
                 result.get("ai_confidence", 0),
@@ -145,7 +141,8 @@ def _call_cerebras(
             if "429" in err or "rate" in err.lower():
                 wait = 30
                 import re
-                m = re.search(r'(\d+)s', err)
+
+                m = re.search(r"(\d+)s", err)
                 if m:
                     wait = int(m.group(1)) + 2
                 if attempt <= max_retries:
@@ -156,7 +153,7 @@ def _call_cerebras(
             else:
                 logger.error("[cerebras] Error attempt %d: %s", attempt, e)
                 if attempt <= max_retries:
-                    time.sleep(2 ** attempt)
+                    time.sleep(2**attempt)
 
     logger.error("[cerebras] All attempts failed")
     return None
@@ -166,11 +163,12 @@ def _call_cerebras(
 #  Public API
 # ─────────────────────────────────────────────────────────────
 
+
 def extract_primary(
     pdf_bytes: bytes,
     page_count: int = 1,
     char_count: int = 0,
-) -> Optional[dict]:
+) -> dict | None:
     """Primary: pdfplumber text + Cerebras Llama 3.3 70B (free, ultra-fast)."""
     logger.info("Primary extraction → pdfplumber + cerebras/%s", MODEL)
     text = extract_text_from_pdf(pdf_bytes)

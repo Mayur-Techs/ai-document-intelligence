@@ -16,27 +16,23 @@ import logging
 import os
 import re
 import time
-import traceback
-from typing import Optional
 
 from groq import Groq
 
-from extractor.cerebras_extractor import extract_text_from_pdf   # shared, no duplication
+from extractor.cerebras_extractor import extract_text_from_pdf  # shared, no duplication
 from extractor.extraction_prompts import INVOICE_SYSTEM_PROMPT, build_extraction_prompt
 from extractor.field_sanitizer import sanitize
 
 logger = logging.getLogger("docai.groq")
 
-PRIMARY_MODEL  = "llama-3.3-70b-versatile"
-FALLBACK_MODEL = "llama-3.1-8b-instant"       # faster backup if 70b is rate-limited
+PRIMARY_MODEL = "llama-3.3-70b-versatile"
+FALLBACK_MODEL = "llama-3.1-8b-instant"  # faster backup if 70b is rate-limited
 
 
 def _get_client() -> Groq:
     key = os.getenv("GROQ_API_KEY")
     if not key:
-        raise EnvironmentError(
-            "GROQ_API_KEY not set. Free key at https://console.groq.com"
-        )
+        raise OSError("GROQ_API_KEY not set. Free key at https://console.groq.com")
     return Groq(api_key=key)
 
 
@@ -46,7 +42,7 @@ def _call_groq(
     page_count: int,
     char_count: int,
     max_retries: int = 2,
-) -> Optional[dict]:
+) -> dict | None:
     if not text or len(text.strip()) < 50:
         logger.error("[groq] Text too short (%d chars)", len(text))
         return None
@@ -57,9 +53,7 @@ def _call_groq(
         {
             "role": "user",
             "content": (
-                f"{user_prompt}\n\n"
-                f"Invoice text extracted from PDF:\n\n"
-                f"{text[:12000]}"
+                f"{user_prompt}\n\n" f"Invoice text extracted from PDF:\n\n" f"{text[:12000]}"
             ),
         },
     ]
@@ -106,7 +100,7 @@ def _call_groq(
             # Rate limit — wait then retry
             if "429" in err or "rate_limit" in err.lower():
                 wait = 30
-                m = re.search(r'try again in ([\d.]+)s', err)
+                m = re.search(r"try again in ([\d.]+)s", err)
                 if m:
                     wait = int(float(m.group(1))) + 2
                 if attempt <= max_retries:
@@ -116,13 +110,15 @@ def _call_groq(
                     # If 70b rate-limited on all retries, try the 8b model once
                     if model == PRIMARY_MODEL:
                         logger.info("[groq] Dropping to %s after rate limit", FALLBACK_MODEL)
-                        return _call_groq(text, FALLBACK_MODEL, page_count, char_count, max_retries=1)
+                        return _call_groq(
+                            text, FALLBACK_MODEL, page_count, char_count, max_retries=1
+                        )
                     return None
 
             else:
                 logger.error("[groq/%s] Error attempt %d: %s", model, attempt, e)
                 if attempt <= max_retries:
-                    time.sleep(2 ** attempt)
+                    time.sleep(2**attempt)
 
     logger.error("[groq/%s] All attempts failed", model)
     return None
@@ -132,25 +128,26 @@ def _call_groq(
 #  Public API — called by pipeline.py
 # ─────────────────────────────────────────────────────────────
 
+
 def extract_fallback(
     pdf_bytes: bytes,
     page_count: int = 1,
     char_count: int = 0,
-) -> Optional[dict]:
+) -> dict | None:
     """Fallback: same pdfplumber text extraction → Groq llama-3.3-70b-versatile."""
     logger.info("Fallback extraction → groq/%s", PRIMARY_MODEL)
     text = extract_text_from_pdf(pdf_bytes)
     return _call_groq(text, PRIMARY_MODEL, page_count, len(text), max_retries=2)
 
 
-def needs_fallback(result: Optional[dict], threshold: float = 0.95) -> bool:
+def needs_fallback(result: dict | None, threshold: float = 0.95) -> bool:
     """Returns True if Cerebras result needs Groq to supplement it."""
     if result is None:
         logger.info("Fallback needed: primary returned None")
         return True
-    critical    = ["vendor_name", "invoice_number", "invoice_date", "total_amount"]
+    critical = ["vendor_name", "invoice_number", "invoice_date", "total_amount"]
     null_fields = [f for f in critical if result.get(f) is None]
-    low_conf    = result.get("ai_confidence", 0) < threshold
+    low_conf = result.get("ai_confidence", 0) < threshold
     if null_fields:
         logger.info("Fallback needed: null fields → %s", null_fields)
     if low_conf:

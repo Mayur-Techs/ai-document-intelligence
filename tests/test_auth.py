@@ -12,6 +12,7 @@ Run locally: pytest tests/ -v
 """
 
 from unittest.mock import patch
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -48,6 +49,7 @@ def setup_test_db():
 @pytest.fixture
 def client():
     from api.main import app
+
     app.dependency_overrides[get_db_for_fastapi] = override_get_db
     with patch("database.connection.Base") as mock_base:
         mock_base.metadata.create_all.return_value = None
@@ -58,42 +60,58 @@ def client():
 
 # ── Auth tests ───────────────────────────────────────────────
 
+
 def test_register_success(client):
-    response = client.post("/auth/register", json={
-        "email": "test_ci@example.com",
-        "password": "testpassword123",
-        "full_name": "CI Test User",
-    })
+    response = client.post(
+        "/auth/register",
+        json={
+            "email": "test_ci@example.com",
+            "password": "testpassword123",
+            "full_name": "CI Test User",
+        },
+    )
     assert response.status_code in (201, 409)
 
 
 def test_register_weak_password(client):
-    response = client.post("/auth/register", json={
-        "email": "weak@example.com",
-        "password": "123",   # too short
-    })
+    response = client.post(
+        "/auth/register",
+        json={
+            "email": "weak@example.com",
+            "password": "123",  # too short
+        },
+    )
     assert response.status_code == 422
 
 
 def test_register_invalid_email(client):
-    response = client.post("/auth/register", json={
-        "email": "not-an-email",
-        "password": "validpassword123",
-    })
+    response = client.post(
+        "/auth/register",
+        json={
+            "email": "not-an-email",
+            "password": "validpassword123",
+        },
+    )
     assert response.status_code == 422
 
 
 def test_login_wrong_password(client):
     # Register the user first so they exist
-    client.post("/auth/register", json={
-        "email": "test_ci@example.com",
-        "password": "testpassword123",
-        "full_name": "CI Test User",
-    })
-    response = client.post("/auth/login", json={
-        "email": "test_ci@example.com",
-        "password": "wrongpassword",
-    })
+    client.post(
+        "/auth/register",
+        json={
+            "email": "test_ci@example.com",
+            "password": "testpassword123",
+            "full_name": "CI Test User",
+        },
+    )
+    response = client.post(
+        "/auth/login",
+        json={
+            "email": "test_ci@example.com",
+            "password": "wrongpassword",
+        },
+    )
     assert response.status_code == 401
 
 

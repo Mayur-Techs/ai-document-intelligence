@@ -13,9 +13,9 @@ Key things we're validating:
 
 Run: pytest tests/test_llm.py -v
 """
+
 from __future__ import annotations
 
-import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -35,7 +35,11 @@ class TestBuildPrompt:
     def test_prompt_requests_json_only(self, sample_extracted_text):
         prompt = build_prompt(sample_extracted_text, document_type="invoice")
         assert "json" in prompt.lower()
-        assert "only" in prompt.lower() or "no other" in prompt.lower() or "no preamble" in prompt.lower()
+        assert (
+            "only" in prompt.lower()
+            or "no other" in prompt.lower()
+            or "no preamble" in prompt.lower()
+        )
 
     def test_prompt_asks_for_confidence_score(self, sample_extracted_text):
         prompt = build_prompt(sample_extracted_text, document_type="invoice")
@@ -100,8 +104,9 @@ class TestExtractFields:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("processor.llm.httpx.AsyncClient", return_value=mock_client), \
-             patch("processor.llm.ANTHROPIC_API_KEY", "sk-ant-test-key"):
+        with patch("processor.llm.httpx.AsyncClient", return_value=mock_client), patch(
+            "processor.llm.ANTHROPIC_API_KEY", "sk-ant-test-key"
+        ):
             output = await extract_fields(sample_extracted_text, document_type="invoice")
 
         assert output.success is True
@@ -134,8 +139,9 @@ class TestExtractFields:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("processor.llm.httpx.AsyncClient", return_value=mock_client), \
-             patch("processor.llm.ANTHROPIC_API_KEY", "sk-ant-test"):
+        with patch("processor.llm.httpx.AsyncClient", return_value=mock_client), patch(
+            "processor.llm.ANTHROPIC_API_KEY", "sk-ant-test"
+        ):
             output = await extract_fields(sample_extracted_text, document_type="invoice")
 
         assert output.success is False
@@ -156,8 +162,9 @@ class TestExtractFields:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("processor.llm.httpx.AsyncClient", return_value=mock_client), \
-             patch("processor.llm.ANTHROPIC_API_KEY", "sk-ant-test"):
+        with patch("processor.llm.httpx.AsyncClient", return_value=mock_client), patch(
+            "processor.llm.ANTHROPIC_API_KEY", "sk-ant-test"
+        ):
             output = await extract_fields(sample_extracted_text, document_type="invoice")
 
         assert isinstance(output, ExtractionOutput)

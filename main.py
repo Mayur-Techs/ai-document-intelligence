@@ -13,6 +13,9 @@ Same reason as System 1:
   - CLI runs batch jobs, dev testing, quick one-offs
   - Both use the same pipeline module — single source of truth
 """
+
+# ruff: noqa: E402
+
 from __future__ import annotations
 
 import argparse
@@ -25,7 +28,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from database.connection import init_db, get_db
+from database.connection import get_db, init_db
 from database.models import Document
 from extractor.pipeline import process_document
 from parser.extractor import extract_text
@@ -51,7 +54,9 @@ async def process_file(file_path: str, doc_type: str, dry_run: bool) -> None:
         # Step 1 only — extract and print text, no DB, no Claude
         result = extract_text(str(path))
         if result.success:
-            logger.info("Extracted %d chars from %d pages", result.page_count * 100, result.page_count)
+            logger.info(
+                "Extracted %d chars from %d pages", result.page_count * 100, result.page_count
+            )
             print("\n" + "─" * 60)
             print(result.text[:2000])
             if result.truncated:
@@ -108,12 +113,13 @@ def parse_args() -> argparse.Namespace:
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--file", help="Path to a single PDF file")
     group.add_argument("--dir", help="Directory containing PDF files")
-    parser.add_argument("--type", default="invoice",
-                        choices=["invoice", "contract", "receipt", "report", "other"])
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Extract text only — no Claude API, no DB write")
-    parser.add_argument("--log-level", default="INFO",
-                        choices=["DEBUG", "INFO", "WARNING"])
+    parser.add_argument(
+        "--type", default="invoice", choices=["invoice", "contract", "receipt", "report", "other"]
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Extract text only — no Claude API, no DB write"
+    )
+    parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING"])
     return parser.parse_args()
 
 
@@ -123,8 +129,8 @@ if __name__ == "__main__":
 
     if not args.dry_run:
         if not os.getenv("GEMINI_API_KEY"):
-          logger.error("GEMINI_API_KEY not set. Get free key at aistudio.google.com")
-          raise SystemExit(1)
+            logger.error("GEMINI_API_KEY not set. Get free key at aistudio.google.com")
+            raise SystemExit(1)
         init_db()
 
     if args.file:

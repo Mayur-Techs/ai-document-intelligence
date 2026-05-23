@@ -4,11 +4,10 @@ tests/test_parser.py — Tests for parser/extractor.py.
 Pure function tests — no DB, no API, no Claude calls.
 Run: pytest tests/test_parser.py -v
 """
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from parser.extractor import ExtractionResult, extract_text, truncate_text
 
@@ -98,10 +97,11 @@ class TestExtractText:
         pdf_file = tmp_path / "scanned.pdf"
         pdf_file.write_bytes(sample_pdf_bytes)
 
-        with patch("parser.extractor.pdfplumber") as mock_plumber, \
-             patch("parser.extractor.fitz") as mock_fitz:
+        with patch("parser.extractor.pdfplumber") as mock_plumber, patch(
+            "parser.extractor.fitz"
+        ) as mock_fitz:
             mock_plumber.open.return_value = _make_plumber_mock("")  # empty
-            mock_fitz.open.return_value = _make_fitz_mock("")        # also empty
+            mock_fitz.open.return_value = _make_fitz_mock("")  # also empty
             result = extract_text(str(pdf_file))
 
         assert result.success is False
@@ -114,8 +114,9 @@ class TestExtractText:
         pdf_file = tmp_path / "fallback.pdf"
         pdf_file.write_bytes(sample_pdf_bytes)
 
-        with patch("parser.extractor.pdfplumber") as mock_plumber, \
-             patch("parser.extractor.fitz") as mock_fitz:
+        with patch("parser.extractor.pdfplumber") as mock_plumber, patch(
+            "parser.extractor.fitz"
+        ) as mock_fitz:
             mock_plumber.open.side_effect = Exception("pdfplumber failed")
             mock_fitz.open.return_value = _make_fitz_mock(REALISTIC_TEXT)
             result = extract_text(str(pdf_file))
@@ -128,8 +129,9 @@ class TestExtractText:
         pdf_file = tmp_path / "broken.pdf"
         pdf_file.write_bytes(sample_pdf_bytes)
 
-        with patch("parser.extractor.pdfplumber") as mock_plumber, \
-             patch("parser.extractor.fitz") as mock_fitz:
+        with patch("parser.extractor.pdfplumber") as mock_plumber, patch(
+            "parser.extractor.fitz"
+        ) as mock_fitz:
             mock_plumber.open.side_effect = Exception("corrupt PDF header")
             mock_fitz.open.side_effect = Exception("cannot repair")
             result = extract_text(str(pdf_file))

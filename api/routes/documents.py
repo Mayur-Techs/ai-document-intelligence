@@ -16,12 +16,14 @@ api/routes/documents.py — Document upload, status, and query endpoints.
   GET    /documents/{id}/download   — download original PDF
   POST   /documents/batch/upload    — upload multiple PDFs at once
 """
+
 from __future__ import annotations
 
+import contextlib
 import csv
 import io
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import (
     APIRouter,
@@ -30,6 +32,7 @@ from fastapi import (
     File,
     HTTPException,
     Query,
+    Response,
     UploadFile,
 )
 from fastapi.responses import StreamingResponse
@@ -47,12 +50,13 @@ router = APIRouter(prefix="/documents", tags=["documents"])
 
 # ── Pydantic schemas ───────────────────────────────────────────────────────────
 
+
 class FieldResponse(BaseModel):
     id: int
     field_name: str
-    field_value: Optional[str]
+    field_value: str | None
     field_type: str
-    confidence: Optional[float]
+    confidence: float | None
     is_verified: bool
     model_config = ConfigDict(from_attributes=True)
 
@@ -60,27 +64,27 @@ class FieldResponse(BaseModel):
 class DocumentResponse(BaseModel):
     id: int
     file_name: str
-    file_size_bytes: Optional[int]
+    file_size_bytes: int | None
     status: str
     document_type: str
-    page_count: Optional[int]
-    char_count: Optional[int]
-    vendor_name: Optional[str]
-    invoice_number: Optional[str]
-    invoice_date: Optional[str]
-    due_date: Optional[str]
-    total_amount: Optional[float]
-    currency: Optional[str]
-    ai_confidence: Optional[float]
-    error_message: Optional[str]
+    page_count: int | None
+    char_count: int | None
+    vendor_name: str | None
+    invoice_number: str | None
+    invoice_date: str | None
+    due_date: str | None
+    total_amount: float | None
+    currency: str | None
+    ai_confidence: float | None
+    error_message: str | None
     uploaded_at: datetime
-    processing_started_at: Optional[datetime]
-    processing_completed_at: Optional[datetime]
+    processing_started_at: datetime | None
+    processing_completed_at: datetime | None
     fields: list[FieldResponse] = []
     model_config = ConfigDict(from_attributes=True)
 
     @property
-    def processing_time_seconds(self) -> Optional[float]:
+    def processing_time_seconds(self) -> float | None:
         if self.processing_started_at and self.processing_completed_at:
             return (self.processing_completed_at - self.processing_started_at).total_seconds()
         return None
@@ -90,9 +94,9 @@ class DocumentStatusResponse(BaseModel):
     id: int
     file_name: str
     status: str
-    error_message: Optional[str]
+    error_message: str | None
     uploaded_at: datetime
-    processing_completed_at: Optional[datetime]
+    processing_completed_at: datetime | None
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -106,11 +110,14 @@ class UploadResponse(BaseModel):
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
+
 @router.post("/upload", response_model=UploadResponse, status_code=202)
 async def upload_document(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    document_type: str = Query(default="invoice", description="invoice|contract|receipt|report|other"),
+    document_type: str = Query(
+        default="invoice", description="invoice|contract|receipt|report|other"
+    ),
     db: Session = Depends(get_db_for_fastapi),
 ) -> dict[str, Any]:
     """
@@ -204,20 +211,16 @@ async def batch_upload(
 def get_stats(db: Session = Depends(get_db_for_fastapi)) -> dict[str, Any]:
     """Aggregate processing stats — total docs, by status, avg confidence, avg time."""
     total = db.query(func.count(Document.id)).scalar() or 0
-    by_status = (
-        db.query(Document.status, func.count(Document.id))
-        .group_by(Document.status)
-        .all()
-    )
+    by_status = db.query(Document.status, func.count(Document.id)).group_by(Document.status).all()
     by_type = (
         db.query(Document.document_type, func.count(Document.id))
         .group_by(Document.document_type)
         .all()
     )
     avg_confidence = db.query(func.avg(Document.ai_confidence)).scalar()
-    avg_total = db.query(func.avg(Document.total_amount)).filter(
-        Document.total_amount.isnot(None)
-    ).scalar()
+    avg_total = (
+        db.query(func.avg(Document.total_amount)).filter(Document.total_amount.isnot(None)).scalar()
+    )
 
     return {
         "total_documents": total,
@@ -230,45 +233,61 @@ def get_stats(db: Session = Depends(get_db_for_fastapi)) -> dict[str, Any]:
 
 @router.get("/export")
 def export_csv(
-    status: Optional[str] = Query(default=None),
-    document_type: Optional[str] = Query(default=None),
+    status: str | None = Query(default=None),
+    document_type: str | None = Query(default=None),
     db: Session = Depends(get_db_for_fastapi),
 ) -> StreamingResponse:
     """Export document summaries as CSV. Streams — no memory limit."""
     query = db.query(Document)
     if status:
-        try:
+        with contextlib.suppress(ValueError):
             query = query.filter(Document.status == status)
-        except ValueError:
-            pass
     if document_type:
-        try:
+        with contextlib.suppress(ValueError):
             query = query.filter(Document.document_type == document_type)
-        except ValueError:
-            pass
 
     docs = query.order_by(Document.uploaded_at.desc()).all()
 
     def generate_csv():
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow([
-            "id", "file_name", "status", "document_type",
-            "vendor_name", "invoice_number", "invoice_date",
-            "total_amount", "currency", "ai_confidence",
-            "page_count", "uploaded_at",
-        ])
+        writer.writerow(
+            [
+                "id",
+                "file_name",
+                "status",
+                "document_type",
+                "vendor_name",
+                "invoice_number",
+                "invoice_date",
+                "total_amount",
+                "currency",
+                "ai_confidence",
+                "page_count",
+                "uploaded_at",
+            ]
+        )
         yield output.getvalue()
 
         for doc in docs:
             output = io.StringIO()
             writer = csv.writer(output)
-            writer.writerow([
-                doc.id, doc.file_name, doc.status, doc.document_type,
-                doc.vendor_name, doc.invoice_number, doc.invoice_date,
-                doc.total_amount, doc.currency, doc.ai_confidence,
-                doc.page_count, doc.uploaded_at.isoformat() if doc.uploaded_at else "",
-            ])
+            writer.writerow(
+                [
+                    doc.id,
+                    doc.file_name,
+                    doc.status,
+                    doc.document_type,
+                    doc.vendor_name,
+                    doc.invoice_number,
+                    doc.invoice_date,
+                    doc.total_amount,
+                    doc.currency,
+                    doc.ai_confidence,
+                    doc.page_count,
+                    doc.uploaded_at.isoformat() if doc.uploaded_at else "",
+                ]
+            )
             yield output.getvalue()
 
     filename = f"documents_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.csv"
@@ -282,16 +301,14 @@ def export_csv(
 @router.get("/search")
 def search_documents(
     q: str = Query(..., description="Search across extracted field values"),
-    field_name: Optional[str] = Query(default=None, description="Restrict to specific field name"),
+    field_name: str | None = Query(default=None, description="Restrict to specific field name"),
     db: Session = Depends(get_db_for_fastapi),
 ) -> list[dict[str, Any]]:
     """
     Full-text search across ExtractedField values.
     Returns matching document IDs and the field that matched.
     """
-    query = db.query(ExtractedField).filter(
-        ExtractedField.field_value.ilike(f"%{q}%")
-    )
+    query = db.query(ExtractedField).filter(ExtractedField.field_value.ilike(f"%{q}%"))
     if field_name:
         query = query.filter(ExtractedField.field_name == field_name)
 
@@ -311,7 +328,7 @@ def search_documents(
 def get_status(document_id: int, db: Session = Depends(get_db_for_fastapi)) -> Document:
     """
     Lightweight status check — no fields returned.
-    Poll this every 2–5 seconds after upload until status=completed.
+    Poll this every 2-5 seconds after upload until status=completed.
     """
     doc = db.query(Document).filter(Document.id == document_id).first()
     if not doc:
@@ -339,8 +356,8 @@ def get_document(document_id: int, db: Session = Depends(get_db_for_fastapi)) ->
 
 @router.get("/", response_model=list[DocumentResponse])
 def list_documents(
-    status: Optional[str] = Query(default=None),
-    document_type: Optional[str] = Query(default=None),
+    status: str | None = Query(default=None),
+    document_type: str | None = Query(default=None),
     limit: int = Query(default=20, le=200),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db_for_fastapi),
@@ -348,15 +365,11 @@ def list_documents(
     """List all documents with optional status/type filters."""
     query = db.query(Document)
     if status:
-        try:
+        with contextlib.suppress(ValueError):
             query = query.filter(Document.status == status)
-        except ValueError:
-            pass
     if document_type:
-        try:
+        with contextlib.suppress(ValueError):
             query = query.filter(Document.document_type == document_type)
-        except ValueError:
-            pass
     return query.order_by(Document.uploaded_at.desc()).offset(offset).limit(limit).all()
 
 
@@ -396,10 +409,14 @@ def verify_field(
     db: Session = Depends(get_db_for_fastapi),
 ) -> ExtractedField:
     """Mark a field as human-verified. Used in review workflows."""
-    field = db.query(ExtractedField).filter(
-        ExtractedField.id == field_id,
-        ExtractedField.document_id == document_id,
-    ).first()
+    field = (
+        db.query(ExtractedField)
+        .filter(
+            ExtractedField.id == field_id,
+            ExtractedField.document_id == document_id,
+        )
+        .first()
+    )
     if not field:
         raise HTTPException(status_code=404, detail="Field not found")
     field.is_verified = True
@@ -409,7 +426,7 @@ def verify_field(
 
 
 # FIXED
-from fastapi import Response  # add this to imports at top if not there
+
 
 @router.delete("/{document_id}", status_code=204, response_class=Response)
 def delete_document(document_id: int, db: Session = Depends(get_db_for_fastapi)):

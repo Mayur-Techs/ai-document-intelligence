@@ -9,6 +9,7 @@ Same test infrastructure pattern as System 1:
 
 Run: pytest tests/test_api.py -v  (no Docker required)
 """
+
 from __future__ import annotations
 
 import io
@@ -50,6 +51,7 @@ def setup_test_db():
 @pytest.fixture
 def client():
     from api.main import app
+
     app.dependency_overrides[get_db_for_fastapi] = override_get_db
     with patch("database.connection.Base") as mock_base:
         mock_base.metadata.create_all.return_value = None
@@ -74,20 +76,28 @@ class TestHealth:
 # ── Upload ────────────────────────────────────────────────────────────────────
 class TestUpload:
     def test_upload_pdf_returns_202(self, client):
-        with patch("api.routes.documents.validate_file") as mock_val, \
-             patch("api.routes.documents.save_upload") as mock_save, \
-             patch("api.routes.documents.process_document"):
-
-            mock_val.return_value = type("V", (), {
-                "valid": True, "error": None,
-                "original_name": "invoice.pdf",
-                "mime_type": "application/pdf",
-                "size_bytes": 1024,
-            })()
-            mock_save.return_value = type("S", (), {
-                "path": "/data/raw/abc.pdf",
-                "size_bytes": 1024,
-            })()
+        with patch("api.routes.documents.validate_file") as mock_val, patch(
+            "api.routes.documents.save_upload"
+        ) as mock_save, patch("api.routes.documents.process_document"):
+            mock_val.return_value = type(
+                "V",
+                (),
+                {
+                    "valid": True,
+                    "error": None,
+                    "original_name": "invoice.pdf",
+                    "mime_type": "application/pdf",
+                    "size_bytes": 1024,
+                },
+            )()
+            mock_save.return_value = type(
+                "S",
+                (),
+                {
+                    "path": "/data/raw/abc.pdf",
+                    "size_bytes": 1024,
+                },
+            )()
 
             r = client.post(
                 "/api/v1/documents/upload",
@@ -102,10 +112,14 @@ class TestUpload:
 
     def test_upload_non_pdf_returns_422(self, client):
         with patch("api.routes.documents.validate_file") as mock_val:
-            mock_val.return_value = type("V", (), {
-                "valid": False,
-                "error": "Only PDF files are accepted. Got: image/jpeg",
-            })()
+            mock_val.return_value = type(
+                "V",
+                (),
+                {
+                    "valid": False,
+                    "error": "Only PDF files are accepted. Got: image/jpeg",
+                },
+            )()
 
             r = client.post(
                 "/api/v1/documents/upload",

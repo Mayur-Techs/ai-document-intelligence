@@ -13,11 +13,13 @@ Original filenames are user-controlled: "../../etc/passwd.pdf" is a valid filena
 Storing the original name in the DB for display but saving with UUID prevents
 path traversal attacks and name collisions entirely.
 """
+
 from __future__ import annotations
 
 import logging
 import os
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 
 logger = logging.getLogger("docai.upload.handler")
@@ -34,7 +36,7 @@ def ensure_upload_dir() -> None:
     logger.info("Upload directory: %s", UPLOAD_DIR.absolute())
 
 
-def save_upload(file_bytes: bytes, original_filename: str) -> tuple[Path, str]:
+def save_upload_bytes(file_bytes: bytes, original_filename: str) -> tuple[Path, str]:
     """
     Validate and save an uploaded file to disk.
 
@@ -63,16 +65,14 @@ def save_upload(file_bytes: bytes, original_filename: str) -> tuple[Path, str]:
     ext = Path(original_filename).suffix.lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise ValueError(
-            f"Unsupported file type: {ext!r}. "
-            f"Supported: {', '.join(ALLOWED_EXTENSIONS)}"
+            f"Unsupported file type: {ext!r}. " f"Supported: {', '.join(ALLOWED_EXTENSIONS)}"
         )
 
     # Validate by magic bytes — don't trust the extension alone
     mime = _detect_mime(file_bytes)
     if mime not in ALLOWED_MIME_TYPES:
         raise ValueError(
-            f"File content is {mime!r}, not a valid PDF. "
-            "Ensure the file is not corrupted."
+            f"File content is {mime!r}, not a valid PDF. " "Ensure the file is not corrupted."
         )
 
     # Save with UUID filename — prevents collisions and path traversal
@@ -83,7 +83,9 @@ def save_upload(file_bytes: bytes, original_filename: str) -> tuple[Path, str]:
     stored_path.write_bytes(file_bytes)
     logger.info(
         "Saved upload: %s → %s (%d bytes)",
-        original_filename, stored_path, size,
+        original_filename,
+        stored_path,
+        size,
     )
     return stored_path, mime
 
@@ -105,8 +107,6 @@ def _detect_mime(data: bytes) -> str:
 # FastAPI-compatible async wrappers                                             #
 # Routes import these — they accept UploadFile, not raw bytes                  #
 # --------------------------------------------------------------------------- #
-
-from dataclasses import dataclass
 
 
 @dataclass
@@ -139,13 +139,17 @@ async def validate_file(upload_file) -> ValidationResult:
         ext = Path(name).suffix.lower()
 
         if size == 0:
-            return ValidationResult(valid=False, error="Empty file", original_name=name, mime_type="", size_bytes=0)
+            return ValidationResult(
+                valid=False, error="Empty file", original_name=name, mime_type="", size_bytes=0
+            )
 
         if size > MAX_FILE_SIZE_BYTES:
             return ValidationResult(
                 valid=False,
                 error=f"File too large: {size / 1024 / 1024:.1f}MB. Max: {MAX_FILE_SIZE_BYTES // 1024 // 1024}MB",
-                original_name=name, mime_type="", size_bytes=size,
+                original_name=name,
+                mime_type="",
+                size_bytes=size,
             )
 
         if ext not in ALLOWED_EXTENSIONS:
@@ -153,20 +157,29 @@ async def validate_file(upload_file) -> ValidationResult:
             return ValidationResult(
                 valid=False,
                 error=f"Only PDF files are accepted. Got: {mime_claim}",
-                original_name=name, mime_type=mime_claim, size_bytes=size,
+                original_name=name,
+                mime_type=mime_claim,
+                size_bytes=size,
             )
 
         mime = _detect_mime(content)
         if mime not in ALLOWED_MIME_TYPES:
             return ValidationResult(
-                valid=False, error=f"File content is not a valid PDF (got: {mime})",
-                original_name=name, mime_type=mime, size_bytes=size,
+                valid=False,
+                error=f"File content is not a valid PDF (got: {mime})",
+                original_name=name,
+                mime_type=mime,
+                size_bytes=size,
             )
 
-        return ValidationResult(valid=True, error=None, original_name=name, mime_type=mime, size_bytes=size)
+        return ValidationResult(
+            valid=True, error=None, original_name=name, mime_type=mime, size_bytes=size
+        )
 
     except Exception as exc:
-        return ValidationResult(valid=False, error=str(exc), original_name="unknown", mime_type="", size_bytes=0)
+        return ValidationResult(
+            valid=False, error=str(exc), original_name="unknown", mime_type="", size_bytes=0
+        )
 
 
 async def save_upload(upload_file, validation: ValidationResult) -> SavedFile:

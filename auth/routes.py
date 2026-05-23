@@ -28,7 +28,8 @@ from auth.core import (
     verify_password,
 )
 from database.connection import get_db_for_fastapi
-from database.models import Session as DBSession, User, UserPlan
+from database.models import Session as DBSession
+from database.models import User, UserPlan
 
 router = APIRouter()
 
@@ -39,10 +40,11 @@ router = APIRouter()
 #  Wrong email format? Rejected before it reaches our code.
 # ─────────────────────────────────────────────────────────────
 
+
 class RegisterRequest(BaseModel):
-    email:        EmailStr          # validates email format automatically
-    password:     str
-    full_name:    str | None = None
+    email: EmailStr  # validates email format automatically
+    password: str
+    full_name: str | None = None
     company_name: str | None = None
 
     @field_validator("password")
@@ -54,35 +56,36 @@ class RegisterRequest(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    email:    EmailStr
+    email: EmailStr
     password: str
 
 
 class AuthResponse(BaseModel):
     access_token: str
-    token_type:   str = "bearer"
-    user_id:      int
-    email:        str
-    plan:         str
-    message:      str
+    token_type: str = "bearer"
+    user_id: int
+    email: str
+    plan: str
+    message: str
 
 
 class UserProfile(BaseModel):
-    id:              int
-    email:           str
-    full_name:       str | None
-    company_name:    str | None
-    plan:            str
-    files_used_today:  int
-    files_used_month:  int
-    daily_limit:     int
-    monthly_limit:   int
-    created_at:      datetime
+    id: int
+    email: str
+    full_name: str | None
+    company_name: str | None
+    plan: str
+    files_used_today: int
+    files_used_month: int
+    daily_limit: int
+    monthly_limit: int
+    created_at: datetime
 
 
 # ─────────────────────────────────────────────────────────────
 #  POST /auth/register
 # ─────────────────────────────────────────────────────────────
+
 
 @router.post("/register", response_model=AuthResponse, status_code=201)
 def register(body: RegisterRequest, db: Session = Depends(get_db_for_fastapi)):
@@ -118,14 +121,16 @@ def register(body: RegisterRequest, db: Session = Depends(get_db_for_fastapi)):
         last_reset_date=datetime.now(timezone.utc),
     )
     db.add(user)
-    db.flush()   # get the user.id without committing
+    db.flush()  # get the user.id without committing
 
     # Create token
     token, jti = create_access_token(user.id, user.plan.value)
 
     # Store session
-    from auth.core import ACCESS_TOKEN_EXPIRE_HOURS
     from datetime import timedelta
+
+    from auth.core import ACCESS_TOKEN_EXPIRE_HOURS
+
     session = DBSession(
         user_id=user.id,
         jti=jti,
@@ -140,13 +145,14 @@ def register(body: RegisterRequest, db: Session = Depends(get_db_for_fastapi)):
         user_id=user.id,
         email=user.email,
         plan=user.plan.value,
-        message=f"Welcome! Your free account gives you 20 extractions per day.",
+        message="Welcome! Your free account gives you 20 extractions per day.",
     )
 
 
 # ─────────────────────────────────────────────────────────────
 #  POST /auth/login
 # ─────────────────────────────────────────────────────────────
+
 
 @router.post("/login", response_model=AuthResponse)
 def login(body: LoginRequest, db: Session = Depends(get_db_for_fastapi)):
@@ -178,8 +184,10 @@ def login(body: LoginRequest, db: Session = Depends(get_db_for_fastapi)):
     # Create token and store session
     token, jti = create_access_token(user.id, user.plan.value)
 
-    from auth.core import ACCESS_TOKEN_EXPIRE_HOURS
     from datetime import timedelta
+
+    from auth.core import ACCESS_TOKEN_EXPIRE_HOURS
+
     session = DBSession(
         user_id=user.id,
         jti=jti,
@@ -209,6 +217,7 @@ def login(body: LoginRequest, db: Session = Depends(get_db_for_fastapi)):
 #  POST /auth/logout
 # ─────────────────────────────────────────────────────────────
 
+
 @router.post("/logout")
 def logout(
     current_user: User = Depends(get_current_user),
@@ -221,10 +230,15 @@ def logout(
     """
     # We need to get the jti from the token — it's in the DB session
     # We find it by user_id + not revoked + most recent
-    session = db.query(DBSession).filter(
-        DBSession.user_id == current_user.id,
-        DBSession.is_revoked == False,
-    ).order_by(DBSession.created_at.desc()).first()
+    session = (
+        db.query(DBSession)
+        .filter(
+            DBSession.user_id == current_user.id,
+            DBSession.is_revoked is False,
+        )
+        .order_by(DBSession.created_at.desc())
+        .first()
+    )
 
     if session:
         session.is_revoked = True
@@ -236,6 +250,7 @@ def logout(
 # ─────────────────────────────────────────────────────────────
 #  GET /auth/me
 # ─────────────────────────────────────────────────────────────
+
 
 @router.get("/me", response_model=UserProfile)
 def get_me(current_user: User = Depends(get_current_user)):

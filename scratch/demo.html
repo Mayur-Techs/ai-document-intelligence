@@ -1,0 +1,730 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Live Demo — DocIntel AI</title>
+<meta name="description" content="Upload any PDF invoice and see AI-powered extraction in real time. No account required.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="css/main.css">
+<style>
+.demo-layout {
+  display: grid;
+  grid-template-columns: 400px 1fr;
+  gap: 1.5rem;
+  min-height: calc(100vh - var(--nav-h) - 4rem);
+}
+.panel { background: var(--navy-700); border: 1px solid var(--border); border-radius: var(--r-lg); }
+.panel-header { padding: 1rem 1.25rem; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+.panel-title { font-size: 13px; font-weight: 600; color: var(--text-300); display: flex; align-items: center; gap: 8px; }
+.panel-title-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--gold-500); }
+.panel-body { padding: 1.25rem; }
+.upload-zone {
+  border: 1.5px dashed rgba(245,158,11,0.3);
+  border-radius: var(--r-md);
+  padding: 2.5rem 1.5rem;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.2s;
+  background: rgba(245,158,11,0.02);
+  position: relative;
+}
+.upload-zone:hover, .upload-zone.drag {
+  border-color: rgba(245,158,11,0.7);
+  background: rgba(245,158,11,0.06);
+}
+.upload-zone.drag { transform: scale(1.01); }
+.upload-icon { font-size: 2.5rem; margin-bottom: 1rem; }
+.upload-title { font-size: 14px; font-weight: 600; color: var(--text-200); margin-bottom: 4px; }
+.upload-sub { font-size: 12px; color: var(--text-600); }
+.upload-btn {
+  display: inline-block; margin-top: 1rem;
+  padding: 8px 20px;
+  background: rgba(245,158,11,0.12);
+  border: 1px solid rgba(245,158,11,0.35);
+  border-radius: var(--r-sm);
+  font-size: 12px; font-weight: 500; color: var(--gold-500);
+  transition: all 0.15s;
+}
+.upload-btn:hover { background: rgba(245,158,11,0.22); }
+.type-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-bottom: 1rem; }
+.type-btn {
+  padding: 8px 10px; border-radius: var(--r-sm);
+  font-size: 12px; color: var(--text-500);
+  border: 1px solid var(--border);
+  background: var(--navy-800);
+  transition: all 0.15s; cursor: pointer; text-align: center;
+}
+.type-btn.active {
+  background: var(--gold-glow);
+  border-color: var(--border-gold);
+  color: var(--gold-500);
+  font-weight: 500;
+}
+.queue-item {
+  background: var(--navy-800);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 0.75rem 1rem;
+  margin-bottom: 0.5rem;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+.queue-item:hover { border-color: rgba(255,255,255,0.12); }
+.queue-item.selected { border-color: var(--gold-500); }
+.queue-item-name { font-size: 12px; font-weight: 500; color: var(--text-200); margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.queue-item-meta { display: flex; align-items: center; justify-content: space-between; }
+.queue-progress { height: 2px; background: var(--border); border-radius: 1px; margin: 6px 0; overflow: hidden; }
+.queue-progress-fill { height: 100%; background: linear-gradient(90deg, var(--gold-500), var(--gold-300)); transition: width 0.5s ease; }
+.status-chip { font-size: 10px; font-weight: 500; padding: 2px 8px; border-radius: 10px; }
+.status-chip.queued { background: rgba(100,116,139,0.15); color: var(--text-600); }
+.status-chip.processing { background: rgba(245,158,11,0.12); color: var(--gold-500); }
+.status-chip.completed { background: var(--green-dim); color: var(--green-500); }
+.status-chip.failed { background: rgba(239,68,68,0.1); color: var(--red-500); }
+.results-area { display: flex; flex-direction: column; gap: 1rem; }
+.empty {
+  flex: 1; display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  padding: 4rem 2rem; text-align: center;
+  background: var(--navy-700); border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+}
+.empty-icon { font-size: 3rem; margin-bottom: 1.25rem; opacity: 0.4; }
+.empty h3 { font-size: 16px; color: var(--text-500); margin-bottom: 0.5rem; }
+.empty p { font-size: 13px; color: var(--text-700); }
+.result-card { background: var(--navy-700); border: 1px solid var(--border); border-radius: var(--r-lg); overflow: hidden; }
+.result-header { padding: 1.25rem 1.5rem; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.result-file { display: flex; align-items: center; gap: 10px; }
+.result-file-icon { width: 36px; height: 36px; background: rgba(245,158,11,0.1); border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 18px; flex-shrink: 0; }
+.result-file-name { font-size: 14px; font-weight: 600; color: var(--text-100); }
+.result-file-meta { font-size: 11px; color: var(--text-500); margin-top: 1px; display: flex; gap: 8px; }
+.result-badges { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.conf-circle { width: 52px; height: 52px; border-radius: 50%; border: 2px solid var(--green-500); display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.conf-val { font-size: 14px; font-weight: 700; color: var(--green-500); line-height: 1; }
+.conf-lbl { font-size: 8px; color: var(--text-600); text-transform: uppercase; }
+.result-body { padding: 1.5rem; }
+.fields-section { margin-bottom: 1.5rem; }
+.fields-title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px; color: var(--text-600); margin-bottom: 0.75rem; }
+.fields-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.75rem; }
+.field-box-key { font-size: 10px; color: var(--text-600); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 3px; }
+.field-box-val { font-size: 12px; color: var(--text-200); background: var(--navy-800); padding: 5px 9px; border-radius: 6px; font-family: var(--font-mono); word-break: break-all; }
+.field-box-val.amount { color: var(--green-500); font-weight: 600; }
+.field-box-val.gstin { color: var(--gold-400); font-size: 11px; }
+.field-box-val.empty-val { color: var(--text-700); font-style: italic; }
+.amounts-row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.75rem; margin-bottom: 1.5rem; }
+.amount-box { background: var(--navy-800); border-radius: var(--r-sm); padding: 1rem; text-align: center; }
+.amount-box-label { font-size: 10px; color: var(--text-600); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+.amount-box-val { font-size: 1.25rem; font-weight: 700; }
+.line-items-table { border: 1px solid var(--border); border-radius: var(--r-sm); overflow: hidden; }
+.line-items-head { display: grid; grid-template-columns: 1fr auto auto auto; gap: 1rem; padding: 8px 12px; background: var(--navy-800); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-600); }
+.line-items-row { display: grid; grid-template-columns: 1fr auto auto auto; gap: 1rem; padding: 9px 12px; border-top: 1px solid var(--border); font-size: 12px; color: var(--text-300); }
+.line-items-row:hover { background: rgba(255,255,255,0.02); }
+.json-viewer { background: var(--navy-950); border-radius: var(--r-sm); padding: 1rem; font-family: var(--font-mono); font-size: 11px; color: var(--text-400); max-height: 200px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
+.json-key { color: #7DD3FC; }
+.json-str { color: #86EFAC; }
+.json-num { color: #FCD34D; }
+.extracting { padding: 3rem; text-align: center; background: var(--navy-700); border: 1px solid var(--border); border-radius: var(--r-lg); }
+.spinner { width: 40px; height: 40px; border: 2px solid var(--border); border-top-color: var(--gold-500); border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 1rem; }
+@keyframes spin { to{transform:rotate(360deg)} }
+.extracting-steps { margin-top: 1.5rem; display: flex; flex-direction: column; gap: 8px; text-align: left; max-width: 300px; margin-left: auto; margin-right: auto; }
+.extracting-step { font-size: 12px; display: flex; align-items: center; gap: 10px; color: var(--text-600); }
+.extracting-step.done { color: var(--green-500); }
+.extracting-step.active { color: var(--gold-500); }
+
+/* ── Export bar ─────────────────────────────────────────────── */
+.export-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; gap: 8px;
+  padding: 0.75rem 1rem;
+  background: var(--navy-800); border-top: 1px solid var(--border);
+}
+.export-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11px; font-weight: 500;
+  padding: 5px 11px;
+  border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--navy-700); color: var(--text-400);
+  transition: all 0.15s; white-space: nowrap;
+}
+.export-btn:hover { color: var(--text-200); border-color: rgba(255,255,255,0.18); }
+.export-btn.csv:hover  { border-color: rgba(16,185,129,0.5); color: var(--green-500); }
+.export-btn.excel:hover { border-color: rgba(59,130,246,0.5); color: #60a5fa; }
+.export-btn.email-btn:hover { border-color: rgba(245,158,11,0.5); color: var(--gold-500); }
+.email-row {
+  display: none; align-items: center; gap: 6px;
+  padding: 0.6rem 1rem; background: var(--navy-800);
+  border-top: 1px solid var(--border);
+}
+.email-row.open { display: flex; }
+.email-row input {
+  flex: 1; max-width: 240px;
+  padding: 5px 10px; font-size: 12px;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: var(--navy-600); color: var(--text-200); outline: none;
+}
+.email-row input:focus { border-color: var(--gold-500); }
+.email-send-btn {
+  padding: 5px 14px; font-size: 12px; font-weight: 500;
+  background: rgba(245,158,11,0.15);
+  border: 1px solid rgba(245,158,11,0.4);
+  border-radius: 6px; color: var(--gold-500); cursor: pointer;
+}
+.email-status { font-size: 11px; color: var(--text-500); }
+
+/* ── Toast ──────────────────────────────────────────────────── */
+.toast-container { position: fixed; bottom: 1.5rem; right: 1.5rem; z-index: 9999; display: flex; flex-direction: column; gap: 8px; }
+.toast {
+  padding: 10px 16px; border-radius: 8px; font-size: 13px; font-weight: 500;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+  animation: slideIn 0.2s ease; pointer-events: none;
+}
+.toast.success { background: #064e3b; color: #6ee7b7; border: 1px solid #065f46; }
+.toast.error   { background: #450a0a; color: #fca5a5; border: 1px solid #7f1d1d; }
+@keyframes slideIn { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
+</style>
+</head>
+<body>
+
+<div class="toast-container" id="toastContainer"></div>
+
+<script src="js/api.js"></script>
+<script src="js/nav.js"></script>
+<script>if(typeof initNav==='function') initNav();</script>
+
+<div class="container" style="padding-top:1.5rem;padding-bottom:2rem;">
+
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem;">
+    <div>
+      <h1 class="h2">Live Demo</h1>
+      <p style="font-size:14px;color:var(--text-500);margin-top:4px;">Upload a real PDF invoice. Watch it get extracted in real time. No account required.</p>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-500);">
+      <div class="status-dot js-status-dot" style="background:var(--text-700);"></div>
+      <span class="js-api-status">Checking API...</span>
+    </div>
+  </div>
+
+  <div class="demo-layout">
+
+    <!-- LEFT PANEL -->
+    <div style="display:flex;flex-direction:column;gap:1rem;">
+
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title"><div class="panel-title-dot"></div> Upload Document</div>
+        </div>
+        <div class="panel-body">
+          <input type="file" id="fileInput" accept=".pdf" multiple style="display:none;">
+          <div class="upload-zone" id="uploadZone">
+            <div class="upload-icon">📄</div>
+            <div class="upload-title">Drop PDF here</div>
+            <div class="upload-sub">Invoice, contract, receipt, PO</div>
+            <div class="upload-btn" onclick="event.stopPropagation();document.getElementById('fileInput').click()">Browse Files</div>
+          </div>
+          <div style="margin-top:1rem;">
+            <div style="font-size:11px;color:var(--text-600);margin-bottom:0.5rem;text-transform:uppercase;letter-spacing:0.6px;">Document Type</div>
+            <div class="type-grid" id="typeGrid">
+              <button class="type-btn active" data-type="invoice">📋 Invoice</button>
+              <button class="type-btn" data-type="contract">📝 Contract</button>
+              <button class="type-btn" data-type="receipt">🧾 Receipt</button>
+              <button class="type-btn" data-type="other">📦 Other</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel" style="flex:1;">
+        <div class="panel-header">
+          <div class="panel-title"><div class="panel-title-dot"></div> Queue</div>
+          <span class="badge badge-gold" id="queueCount" style="display:none;">0</span>
+        </div>
+        <div class="panel-body" id="queueList">
+          <div style="text-align:center;padding:2rem 0;color:var(--text-700);font-size:12px;">No documents yet</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-body" style="padding:1rem;">
+          <div style="font-size:11px;font-weight:600;color:var(--text-500);text-transform:uppercase;letter-spacing:0.7px;margin-bottom:0.75rem;">Extraction Pipeline</div>
+          <div style="display:flex;flex-direction:column;gap:6px;">
+            <div style="display:flex;align-items:center;gap:8px;font-size:11px;color:var(--text-400);">
+              <span style="width:18px;height:18px;background:rgba(16,185,129,0.1);border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:9px;color:var(--green-500);flex-shrink:0;">1</span>
+              pdfplumber extraction
+              <span class="badge badge-green" style="margin-left:auto;">Free</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;font-size:11px;color:var(--text-400);">
+              <span style="width:18px;height:18px;background:rgba(16,185,129,0.1);border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:9px;color:var(--green-500);flex-shrink:0;">2</span>
+              Cerebras AI (primary)
+              <span class="badge badge-green" style="margin-left:auto;">Free</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;font-size:11px;color:var(--text-400);">
+              <span style="width:18px;height:18px;background:rgba(139,92,246,0.1);border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:9px;color:var(--purple-500);flex-shrink:0;">3</span>
+              Groq fallback (if needed)
+              <span class="badge badge-purple" style="margin-left:auto;">AI</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- RIGHT PANEL -->
+    <div id="resultsArea">
+      <div class="empty">
+        <div class="empty-icon">📂</div>
+        <h3>Upload a PDF to begin</h3>
+        <p>Results appear here as each document is processed.<br>Typically takes 2–10 seconds per file.</p>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+// ── Config ───────────────────────────────────────────────────────────────────
+
+let selectedType = 'invoice';
+let docs = [];
+let selectedDocId = null;
+
+// ── Toast ────────────────────────────────────────────────────────────────────
+function showToast(msg, type) {
+  const container = document.getElementById('toastContainer');
+  const t = document.createElement('div');
+  t.className = 'toast ' + (type || 'success');
+  t.textContent = msg;
+  container.appendChild(t);
+  setTimeout(() => { t.remove(); }, 3500);
+}
+
+// ── Type selector ────────────────────────────────────────────────────────────
+document.querySelectorAll('.type-btn').forEach(function(btn) {
+  btn.addEventListener('click', function() {
+    document.querySelectorAll('.type-btn').forEach(function(b) { b.classList.remove('active'); });
+    btn.classList.add('active');
+    selectedType = btn.dataset.type;
+  });
+});
+
+// ── Drag and drop ────────────────────────────────────────────────────────────
+var zone  = document.getElementById('uploadZone');
+var input = document.getElementById('fileInput');
+
+zone.addEventListener('dragover', function(e) { e.preventDefault(); zone.classList.add('drag'); });
+zone.addEventListener('dragleave', function() { zone.classList.remove('drag'); });
+zone.addEventListener('drop', function(e) {
+  e.preventDefault();
+  zone.classList.remove('drag');
+  Array.from(e.dataTransfer.files)
+    .filter(function(f) { return f.type === 'application/pdf'; })
+    .forEach(uploadFile);
+});
+zone.addEventListener('click', function() { input.click(); });
+
+input.addEventListener('change', function() {
+  Array.from(input.files).forEach(uploadFile);
+  input.value = '';
+});
+
+// ── Upload ───────────────────────────────────────────────────────────────────
+function uploadFile(file) {
+  var doc = {
+    localId: Date.now() + Math.random(),
+    name: file.name,
+    size: file.size,
+    type: selectedType,
+    status: 'queued',
+    progress: 0,
+    data: null,
+    docId: null,
+    error: null,
+  };
+
+  docs.unshift(doc);
+  selectedDocId = doc.localId;
+  renderQueue();
+  renderResults();
+
+  // Try real API first
+  (typeof DocAPI !== 'undefined' && DocAPI.uploadDocument
+    ? DocAPI.uploadDocument(file, selectedType)
+    : Promise.reject('no api')
+  ).then(function(uploaded) {
+    doc.docId = uploaded.document_id || uploaded.id;
+    doc.status = 'processing';
+    doc.progress = 25;
+    renderQueue();
+
+    return pollUntilDone(doc);
+
+  }).catch(function() {
+    // API unreachable — show simulated result
+    simulateExtraction(doc);
+  });
+}
+
+function pollUntilDone(doc) {
+  if (typeof DocAPI !== 'undefined' && DocAPI.pollDocument) {
+    return DocAPI.pollDocument(doc.docId, function(interim) {
+      doc.status = interim.status;
+      doc.progress = interim.status === 'processing' ? 60 : 90;
+      renderQueue();
+    }).then(function(result) {
+      doc.status = result.status;
+      doc.progress = 100;
+      doc.data = result;
+      if (result.status === 'failed') doc.error = result.error_message;
+      renderQueue();
+      renderResults();
+      showToast(doc.name.substring(0,30) + ' — extraction complete', 'success');
+    });
+  }
+
+  // Fallback polling via fetch
+  return new Promise(function(resolve) {
+    var attempts = 0;
+    var timer = setInterval(function() {
+      attempts++;
+      doc.progress = Math.min(90, 25 + attempts * 10);
+      renderQueue();
+
+      fetch(API_BASE + '/documents/' + doc.docId)
+        .then(function(r) { return r.json(); })
+        .then(function(result) {
+          if (result.status === 'completed' || result.status === 'failed' || attempts > 20) {
+            clearInterval(timer);
+            doc.status = result.status;
+            doc.progress = 100;
+            doc.data = result;
+            if (result.status === 'failed') doc.error = result.error_message;
+            renderQueue();
+            renderResults();
+            showToast(doc.name.substring(0,30) + ' — done', 'success');
+            resolve();
+          }
+        }).catch(function() {
+          if (attempts > 20) { clearInterval(timer); resolve(); }
+        });
+    }, 2000);
+  });
+}
+
+// ── Simulate ─────────────────────────────────────────────────────────────────
+function simulateExtraction(doc) {
+  doc.status = 'processing'; doc.progress = 25; renderQueue(); renderResults();
+  setTimeout(function() { doc.progress = 55; renderQueue(); renderResults(); }, 1200);
+  setTimeout(function() { doc.progress = 85; renderQueue(); renderResults(); }, 2200);
+  setTimeout(function() {
+    doc.status = 'completed'; doc.progress = 100;
+    doc.data = {
+      status: 'completed',
+      file_name: doc.name,
+      page_count: 2,
+      ai_confidence: 0.91,
+      vendor_name: 'Sharma Freight Solutions Pvt Ltd',
+      invoice_number: 'INV-2026-04892',
+      invoice_date: '15 Apr 2026',
+      due_date: '15 May 2026',
+      currency: 'INR',
+      vendor_gstin: '27AAPFU0939F1ZV',
+      buyer_gstin: '27AABCU9603R1ZM',
+      buyer_name: 'Tech Innovations Corp',
+      subtotal: 167250,
+      tax_amount: null,
+      total_amount: 167250,
+      fields: [
+        { field_name: 'line_items_1', field_value: JSON.stringify({ description: 'Ocean Freight Mumbai → Rotterdam', quantity: 1, unit_price: 142500, amount: 142500 }) },
+        { field_name: 'line_items_2', field_value: JSON.stringify({ description: 'Port Handling Charges', amount: 8250 }) },
+        { field_name: 'line_items_3', field_value: JSON.stringify({ description: 'Custom Clearance Documentation', amount: 4500 }) },
+        { field_name: 'line_items_4', field_value: JSON.stringify({ description: 'Inland Transport — Factory to Port', amount: 12000 }) },
+      ],
+      _simulated: true,
+    };
+    renderQueue();
+    renderResults();
+    showToast('Demo extraction complete (simulated)', 'success');
+  }, 3200);
+}
+
+// ── Queue renderer ───────────────────────────────────────────────────────────
+function renderQueue() {
+  var el = document.getElementById('queueList');
+  var badge = document.getElementById('queueCount');
+  if (!docs.length) {
+    el.innerHTML = '<div style="text-align:center;padding:2rem 0;color:var(--text-700);font-size:12px;">No documents yet</div>';
+    badge.style.display = 'none';
+    return;
+  }
+  badge.style.display = 'inline-flex';
+  badge.textContent = docs.length;
+  el.innerHTML = docs.map(function(d) {
+    var label = { queued: 'Queued', processing: 'Extracting...', completed: 'Done', failed: 'Failed' }[d.status] || d.status;
+    return '<div class="queue-item ' + (d.localId === selectedDocId ? 'selected' : '') + '" onclick="selectDoc(\'' + d.localId + '\')">'
+      + '<div class="queue-item-name" title="' + d.name + '">' + d.name + '</div>'
+      + '<div class="queue-progress"><div class="queue-progress-fill" style="width:' + d.progress + '%"></div></div>'
+      + '<div class="queue-item-meta">'
+      + '<span style="font-size:10px;color:var(--text-700);">' + (d.size/1024).toFixed(1) + ' KB · ' + d.type + '</span>'
+      + '<span class="status-chip ' + d.status + '">' + label + '</span>'
+      + '</div></div>';
+  }).join('');
+}
+
+function selectDoc(localId) {
+  selectedDocId = localId;
+  renderQueue();
+  renderResults();
+}
+
+// ── Results renderer ─────────────────────────────────────────────────────────
+function renderResults() {
+  var el = document.getElementById('resultsArea');
+  var doc = docs.find(function(d) { return d.localId == selectedDocId; });
+
+  if (!doc) {
+    el.innerHTML = '<div class="empty"><div class="empty-icon">📂</div><h3>Upload a PDF to begin</h3><p>Results appear here as each document is processed.</p></div>';
+    return;
+  }
+  if (doc.status === 'queued') {
+    el.innerHTML = '<div class="extracting"><div class="spinner"></div><p style="color:var(--text-400);font-size:14px;">Queued for processing...</p></div>';
+    return;
+  }
+  if (doc.status === 'processing') {
+    el.innerHTML = '<div class="extracting">'
+      + '<div class="spinner"></div>'
+      + '<p style="color:var(--text-400);font-size:14px;margin-bottom:0.5rem;">Extracting document...</p>'
+      + '<p style="font-size:12px;color:var(--text-600);">' + doc.name + '</p>'
+      + '<div class="extracting-steps">'
+      + '<div class="extracting-step done">✓ PDF parsed with pdfplumber</div>'
+      + '<div class="extracting-step ' + (doc.progress >= 60 ? 'done' : 'active') + '">' + (doc.progress >= 60 ? '✓' : '⟳') + ' Cerebras AI extraction</div>'
+      + '<div class="extracting-step ' + (doc.progress >= 85 ? 'active' : '') + '">' + (doc.progress >= 85 ? '⟳' : '◦') + ' Groq fallback if needed</div>'
+      + '</div></div>';
+    return;
+  }
+  if (doc.status === 'failed') {
+    el.innerHTML = '<div class="extracting"><div style="font-size:2rem;margin-bottom:1rem;">❌</div>'
+      + '<p style="color:var(--red-500);">Extraction failed</p>'
+      + '<p style="font-size:12px;color:var(--text-600);margin-top:0.5rem;">' + (doc.error || 'Unknown error — try a different PDF') + '</p></div>';
+    return;
+  }
+
+  var d = doc.data;
+  var conf = Math.round((d.ai_confidence || 0.9) * 100);
+  var confColor = conf >= 85 ? 'var(--green-500)' : conf >= 60 ? 'var(--gold-500)' : 'var(--red-500)';
+
+  var lineItems = (d.fields || [])
+    .filter(function(f) { return f.field_name.startsWith('line_items_'); })
+    .map(function(f) { try { return JSON.parse(f.field_value); } catch(e) { return { description: f.field_value }; } })
+    .filter(Boolean);
+
+  function fmt(n) { return n ? Number(n).toLocaleString('en-IN', { maximumFractionDigits: 0 }) : '—'; }
+  function fmtAmt(n) { return n ? '₹' + fmt(n) : '—'; }
+  function fv(v) { return v || null; }
+
+  var lineItemsHtml = '';
+  if (lineItems.length) {
+    lineItemsHtml = '<div class="fields-section">'
+      + '<div class="fields-title">Line Items (' + lineItems.length + ')</div>'
+      + '<div class="line-items-table">'
+      + '<div class="line-items-head"><span>Description</span><span>Qty</span><span>Unit Price</span><span>Amount</span></div>'
+      + lineItems.map(function(li) {
+          return '<div class="line-items-row">'
+            + '<span>' + (li.description || '—') + '</span>'
+            + '<span style="text-align:right;">' + (li.quantity != null ? li.quantity : '—') + '</span>'
+            + '<span style="text-align:right;color:var(--text-400);">' + (li.unit_price ? '₹' + fmt(li.unit_price) : '—') + '</span>'
+            + '<span style="text-align:right;color:var(--green-500);font-weight:500;">' + (li.amount ? '₹' + fmt(li.amount) : '—') + '</span>'
+            + '</div>';
+        }).join('')
+      + '</div></div>';
+  }
+
+  var isLive = !d._simulated;
+  var exportId = doc.docId;
+
+  el.innerHTML = '<div class="result-card">'
+
+    // Header
+    + '<div class="result-header">'
+    + '<div class="result-file">'
+    + '<div class="result-file-icon">📄</div>'
+    + '<div>'
+    + '<div class="result-file-name">' + (d.file_name || doc.name) + '</div>'
+    + '<div class="result-file-meta">'
+    + (d.page_count ? '<span>' + d.page_count + ' pages</span>' : '')
+    + '<span>' + (d.document_type || doc.type) + '</span>'
+    + (d._simulated ? '<span style="color:var(--gold-500);">⚡ Demo data</span>' : '<span style="color:var(--green-500);">✓ Live extraction</span>')
+    + '</div></div></div>'
+    + '<div class="result-badges">'
+    + '<div class="conf-circle" style="border-color:' + confColor + ';">'
+    + '<div class="conf-val" style="color:' + confColor + ';">' + conf + '%</div>'
+    + '<div class="conf-lbl">conf.</div>'
+    + '</div></div></div>'
+
+    // Body
+    + '<div class="result-body">'
+
+    // Key fields
+    + '<div class="fields-section">'
+    + '<div class="fields-title">Extracted Fields</div>'
+    + '<div class="fields-grid">'
+    + fieldBox('Vendor Name', fv(d.vendor_name))
+    + fieldBox('Buyer Name', fv(d.buyer_name))
+    + fieldBox('Invoice Number', fv(d.invoice_number))
+    + fieldBox('Invoice Date', fv(d.invoice_date))
+    + fieldBox('Due Date', fv(d.due_date))
+    + fieldBox('Currency', fv(d.currency))
+    + fieldBox('Vendor GSTIN', fv(d.vendor_gstin), 'gstin')
+    + fieldBox('Buyer GSTIN', fv(d.buyer_gstin), 'gstin')
+    + fieldBox('Bank IFSC', fv(d.bank_ifsc))
+    + '</div></div>'
+
+    // Amounts
+    + '<div class="amounts-row">'
+    + '<div class="amount-box"><div class="amount-box-label">Subtotal</div><div class="amount-box-val" style="color:var(--text-300);">' + fmtAmt(d.subtotal) + '</div></div>'
+    + '<div class="amount-box"><div class="amount-box-label">GST / Tax</div><div class="amount-box-val" style="color:var(--gold-500);">' + (d.tax_amount ? fmtAmt(d.tax_amount) : 'None') + '</div></div>'
+    + '<div class="amount-box" style="border:1px solid rgba(16,185,129,0.2);background:rgba(16,185,129,0.05);"><div class="amount-box-label">Grand Total</div><div class="amount-box-val" style="color:var(--green-500);">' + fmtAmt(d.total_amount) + '</div></div>'
+    + '</div>'
+
+    // Line items
+    + lineItemsHtml
+
+    // JSON viewer
+    + '<details style="margin-top:0.75rem;">'
+    + '<summary style="font-size:12px;color:var(--text-500);cursor:pointer;user-select:none;padding:4px 0;">View raw JSON response</summary>'
+    + '<div class="json-viewer" style="margin-top:0.75rem;">' + formatJson(d) + '</div>'
+    + '</details>'
+    + '</div>'
+
+    // Export bar
+    + '<div class="export-bar">'
+    + '<div style="display:flex;gap:6px;flex-wrap:wrap;">'
+    + '<span class="badge badge-green">✓ pdfplumber</span>'
+    + '<span class="badge badge-green">✓ Cerebras AI</span>'
+    + (conf < 95 ? '<span class="badge badge-purple">+ Groq fallback</span>' : '<span class="badge badge-gold">High confidence</span>')
+    + '</div>'
+    + '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">'
+    + '<button class="export-btn" onclick="copyJson()">📋 Copy JSON</button>'
+    + (isLive
+        ? '<button class="export-btn csv"    onclick="downloadCSV('   + exportId + ')">📊 CSV</button>'
+        + '<button class="export-btn excel"  onclick="downloadExcel(' + exportId + ')">📗 Excel</button>'
+        + '<button class="export-btn email-btn" onclick="toggleEmail()">✉️ Email</button>'
+        : '<span style="font-size:11px;color:var(--text-600);">Upload a real PDF to enable CSV / Excel / Email</span>')
+    + '</div>'
+    + '</div>'
+
+    // Email row (hidden until toggled)
+    + '<div class="email-row" id="emailBar">'
+    + '<input type="email" id="emailInput" placeholder="recipient@company.com" />'
+    + '<button class="email-send-btn" onclick="sendEmail(' + exportId + ')">Send Excel</button>'
+    + '<span class="email-status" id="emailStatus"></span>'
+    + '</div>'
+
+    + '</div>';   // closes result-card
+
+  window._currentJson = d;
+}
+
+function fieldBox(label, value, extraClass) {
+  var cls = 'field-box-val' + (extraClass ? ' ' + extraClass : '') + (!value ? ' empty-val' : '');
+  return '<div class="field-box">'
+    + '<div class="field-box-key">' + label + '</div>'
+    + '<div class="' + cls + '">' + (value || 'not found') + '</div>'
+    + '</div>';
+}
+
+// ── Export functions ─────────────────────────────────────────────────────────
+function downloadFile(url, filename) {
+  showToast('Preparing download...', 'success');
+  fetch(url)
+    .then(function(r) {
+      if (!r.ok) throw new Error('Server returned ' + r.status);
+      return r.blob();
+    })
+    .then(function(blob) {
+      var objectUrl = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = objectUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(function() { URL.revokeObjectURL(objectUrl); }, 5000);
+      showToast(filename + ' downloaded', 'success');
+    })
+    .catch(function(err) {
+      showToast('Download failed — ' + err.message, 'error');
+    });
+}
+
+function downloadCSV(id) {
+  downloadFile(API_BASE + '/documents/' + id + '/export/csv', 'invoice_' + id + '.csv');
+}
+
+function downloadExcel(id) {
+  downloadFile(API_BASE + '/documents/' + id + '/export/excel', 'invoice_' + id + '.xlsx');
+}
+
+function toggleEmail() {
+  var bar = document.getElementById('emailBar');
+  if (bar) bar.classList.toggle('open');
+}
+
+function sendEmail(id) {
+  var to = (document.getElementById('emailInput') || {}).value || '';
+  to = to.trim();
+  var status = document.getElementById('emailStatus');
+  if (!to || !to.includes('@')) { showToast('Enter a valid email address', 'error'); return; }
+  if (status) status.textContent = 'Sending...';
+  fetch(API_BASE + '/documents/' + id + '/export/email?to=' + encodeURIComponent(to))
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.success) {
+        showToast('Email sent to ' + to, 'success');
+        if (status) status.textContent = '✓ Sent to ' + to;
+        var bar = document.getElementById('emailBar');
+        if (bar) bar.classList.remove('open');
+      } else {
+        showToast(data.detail || 'Email failed', 'error');
+        if (status) status.textContent = '✗ Failed';
+      }
+    })
+    .catch(function() { showToast('Network error', 'error'); });
+}
+
+// ── JSON helpers ─────────────────────────────────────────────────────────────
+function formatJson(obj) {
+  var str = JSON.stringify(obj, null, 2);
+  return str
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"([^"]+)":/g, '<span class="json-key">"$1"</span>:')
+    .replace(/: "([^"]*)"(,?\n)/g, ': <span class="json-str">"$1"</span>$2')
+    .replace(/: (\d+\.?\d*)(,?\n)/g, ': <span class="json-num">$1</span>$2');
+}
+
+function copyJson() {
+  if (!window._currentJson) return;
+  navigator.clipboard.writeText(JSON.stringify(window._currentJson, null, 2))
+    .then(function() { showToast('JSON copied to clipboard', 'success'); })
+    .catch(function() { showToast('Copy failed — use Ctrl+C', 'error'); });
+}
+
+// ── API status check ─────────────────────────────────────────────────────────
+fetch(API_BASE + '/health')
+  .then(function(r) {
+    var dot  = document.querySelector('.js-status-dot');
+    var span = document.querySelector('.js-api-status');
+    if (r.ok) {
+      if (dot)  dot.style.background  = 'var(--green-500)';
+      if (span) span.textContent = 'API Live';
+    } else {
+      if (span) span.textContent = 'API error';
+    }
+  })
+  .catch(function() {
+    var span = document.querySelector('.js-api-status');
+    if (span) span.textContent = 'API offline (showing demo)';
+  });
+</script>
+</body>
+</html>
