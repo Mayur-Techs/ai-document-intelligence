@@ -21,8 +21,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from auth.core import get_current_user, get_optional_user
 from database.connection import get_db_for_fastapi
-from database.models import Base, Document, ProcessingStatus
+from database.models import Base, Document, ProcessingStatus, User, UserPlan
 
 TEST_DB_URL = "sqlite:///:memory:"
 test_engine = create_engine(
@@ -52,7 +53,19 @@ def setup_test_db():
 def client():
     from api.main import app
 
+    dummy_user = User(
+        id=1,
+        email="test_api@example.com",
+        full_name="API Test User",
+        plan=UserPlan.free,
+        files_used_today=0,
+        files_used_month=0,
+        is_active=True,
+    )
+
     app.dependency_overrides[get_db_for_fastapi] = override_get_db
+    app.dependency_overrides[get_current_user] = lambda: dummy_user
+    app.dependency_overrides[get_optional_user] = lambda: dummy_user
     with patch("database.connection.Base") as mock_base:
         mock_base.metadata.create_all.return_value = None
         with TestClient(app) as c:
@@ -135,6 +148,7 @@ class TestDocumentStatus:
             file_name="test_invoice.pdf",
             file_path="/data/raw/test.pdf",
             file_size_bytes=12345,
+            user_id=1,
         )
         db.add(doc)
         db.commit()
@@ -199,8 +213,8 @@ class TestStats:
 
     def test_stats_with_documents(self, client):
         db = TestSessionLocal()
-        db.add(Document(file_name="a.pdf", file_path="/a", file_size_bytes=100))
-        db.add(Document(file_name="b.pdf", file_path="/b", file_size_bytes=200))
+        db.add(Document(file_name="a.pdf", file_path="/a", file_size_bytes=100, user_id=1))
+        db.add(Document(file_name="b.pdf", file_path="/b", file_size_bytes=200, user_id=1))
         db.commit()
         db.close()
 
@@ -218,6 +232,7 @@ class TestReprocess:
             file_size_bytes=1000,
             status=ProcessingStatus.FAILED.value,
             error_message="Previous error",
+            user_id=1,
         )
         db.add(doc)
         db.commit()
@@ -240,7 +255,7 @@ class TestReprocess:
 class TestDelete:
     def test_delete_document(self, client):
         db = TestSessionLocal()
-        doc = Document(file_name="del.pdf", file_path="/del.pdf", file_size_bytes=500)
+        doc = Document(file_name="del.pdf", file_path="/del.pdf", file_size_bytes=500, user_id=1)
         db.add(doc)
         db.commit()
         doc_id = doc.id

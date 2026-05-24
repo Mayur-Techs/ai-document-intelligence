@@ -22,6 +22,8 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+from utils.s3 import is_s3_enabled, upload_file_bytes
+
 logger = logging.getLogger("docai.upload.handler")
 
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "data/raw"))
@@ -120,7 +122,7 @@ class ValidationResult:
 
 @dataclass
 class SavedFile:
-    path: Path
+    path: Path | str
     size_bytes: int
 
 
@@ -182,18 +184,29 @@ async def validate_file(upload_file) -> ValidationResult:
         )
 
 
+
+
+
 async def save_upload(upload_file, validation: ValidationResult) -> SavedFile:
     """
-    Save a validated UploadFile to disk. Returns SavedFile with path + size.
+    Save a validated UploadFile to S3 (if enabled) or disk. Returns SavedFile with path + size.
     Must be called after validate_file — assumes file pointer is at start.
     """
     content = await upload_file.read()
-    ensure_upload_dir()
-
     ext = Path(validation.original_name).suffix.lower()
     stored_name = f"{uuid.uuid4().hex}{ext}"
+
+    if is_s3_enabled():
+        # Save to S3
+        s3_uri = upload_file_bytes(content, stored_name, content_type="application/pdf")
+        if s3_uri:
+            return SavedFile(path=s3_uri, size_bytes=len(content))
+        logger.warning("S3 upload returned None. Falling back to local disk.")
+
+    # Fallback to local disk
+    ensure_upload_dir()
     stored_path = UPLOAD_DIR / stored_name
     stored_path.write_bytes(content)
 
-    logger.info("Saved: %s → %s (%d bytes)", validation.original_name, stored_path, len(content))
+    logger.info("Saved local: %s → %s (%d bytes)", validation.original_name, stored_path, len(content))
     return SavedFile(path=stored_path, size_bytes=len(content))

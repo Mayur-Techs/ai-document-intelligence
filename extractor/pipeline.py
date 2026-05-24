@@ -179,7 +179,13 @@ async def process_document(document_id: int) -> None:
         if not doc:
             logger.error("Doc id=%d not found", document_id)
             return
-        file_path = _resolve_path(doc)
+
+        raw_file_path = doc.file_path
+        is_s3 = raw_file_path and raw_file_path.startswith("s3://")
+
+        # Resolve local path if it is not S3
+        file_path = None if is_s3 else _resolve_path(doc)
+
         page_count = getattr(doc, "page_count", None) or 1
         char_count = getattr(doc, "char_count", None) or 0
         doc.status = "processing"
@@ -191,12 +197,22 @@ async def process_document(document_id: int) -> None:
         db.close()
 
     # 2. Read PDF bytes
-    if not file_path:
-        _mark_failed(document_id, "File not found on disk")
-        return
     try:
-        pdf_bytes = file_path.read_bytes()
-        logger.info("Read %d bytes from %s", len(pdf_bytes), file_path)
+        if is_s3:
+            from utils.s3 import download_file_bytes
+            # S3 URI is "s3://bucket-name/key"
+            s3_path = raw_file_path[5:]  # Remove "s3://"
+            parts = s3_path.split("/", 1)
+            key = parts[1] if len(parts) == 2 else s3_path
+
+            pdf_bytes = download_file_bytes(key)
+            logger.info("Read %d bytes from S3 key: %s", len(pdf_bytes), key)
+        else:
+            if not file_path:
+                _mark_failed(document_id, f"File not found on local disk: {raw_file_path}")
+                return
+            pdf_bytes = file_path.read_bytes()
+            logger.info("Read %d bytes from local file %s", len(pdf_bytes), file_path)
     except Exception as e:
         _mark_failed(document_id, f"Cannot read PDF: {e}")
         return

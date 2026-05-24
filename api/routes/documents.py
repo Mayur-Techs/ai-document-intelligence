@@ -32,6 +32,7 @@ from fastapi import (
     File,
     HTTPException,
     Query,
+    Request,
     Response,
     UploadFile,
 )
@@ -40,9 +41,11 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from auth.core import get_current_user, get_optional_user
+from auth.rate_limit import enforce_rate_limit
 from database.connection import get_db_for_fastapi
-from database.models import Document, DocumentType, ExtractedField, ProcessingStatus
-from extractor.pipeline import process_document
+from database.models import Document, DocumentType, ExtractedField, ProcessingStatus, User
+from extractor.pipeline import _resolve_path, process_document
 from upload.handler import save_upload, validate_file
 
 router = APIRouter(prefix="/documents", tags=["documents"])
@@ -113,11 +116,13 @@ class UploadResponse(BaseModel):
 
 @router.post("/upload", response_model=UploadResponse, status_code=202)
 async def upload_document(
+    request: Request,
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     document_type: str = Query(
         default="invoice", description="invoice|contract|receipt|report|other"
     ),
+    current_user: User | None = Depends(get_optional_user),
     db: Session = Depends(get_db_for_fastapi),
 ) -> dict[str, Any]:
     """
@@ -126,18 +131,16 @@ async def upload_document(
     Returns 202 Accepted immediately — extraction runs in the background.
     Poll GET /documents/{id}/status to check progress.
     Once status=completed, GET /documents/{id} returns extracted fields.
-
-    WHY 202 and not 200?
-    HTTP 202 = "I accepted the request and will process it asynchronously."
-    HTTP 200 = "I processed it and here's the result."
-    Returning 200 here would imply the extraction is done, which it isn't.
     """
+    # Enforce rate limits
+    ip = enforce_rate_limit(request, db, current_user)
+
     # Validate before touching DB
     validation = await validate_file(file)
     if not validation.valid:
         raise HTTPException(status_code=422, detail=validation.error)
 
-    # Save to disk
+    # Save to S3 or disk
     saved = await save_upload(file, validation)
 
     # Resolve document type
@@ -146,13 +149,15 @@ async def upload_document(
     except ValueError:
         doc_type = DocumentType.OTHER
 
-    # Create DB record
+    # Create DB record with owner mapping
     doc = Document(
         file_name=validation.original_name,
         file_path=str(saved.path),
         file_size_bytes=saved.size_bytes,
         document_type=doc_type.value,
         status=ProcessingStatus.QUEUED.value,
+        user_id=current_user.id if current_user else None,
+        ip_address=ip if not current_user else None,
     )
     db.add(doc)
     db.commit()
@@ -172,12 +177,17 @@ async def upload_document(
 
 @router.post("/batch/upload", status_code=202)
 async def batch_upload(
+    request: Request,
     background_tasks: BackgroundTasks,
     files: list[UploadFile] = File(...),
     document_type: str = Query(default="invoice"),
+    current_user: User | None = Depends(get_optional_user),
     db: Session = Depends(get_db_for_fastapi),
 ) -> dict[str, Any]:
     """Upload multiple PDFs at once. Each processes independently."""
+    # Enforce rate limit
+    ip = enforce_rate_limit(request, db, current_user)
+
     results = []
     for file in files:
         validation = await validate_file(file)
@@ -197,6 +207,8 @@ async def batch_upload(
             file_size_bytes=saved.size_bytes,
             document_type=doc_type.value,
             status=ProcessingStatus.QUEUED.value,
+            user_id=current_user.id if current_user else None,
+            ip_address=ip if not current_user else None,
         )
         db.add(doc)
         db.commit()
@@ -208,18 +220,33 @@ async def batch_upload(
 
 
 @router.get("/stats/summary")
-def get_stats(db: Session = Depends(get_db_for_fastapi)) -> dict[str, Any]:
-    """Aggregate processing stats — total docs, by status, avg confidence, avg time."""
-    total = db.query(func.count(Document.id)).scalar() or 0
-    by_status = db.query(Document.status, func.count(Document.id)).group_by(Document.status).all()
+def get_stats(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db_for_fastapi),
+) -> dict[str, Any]:
+    """Aggregate processing stats for the logged-in user."""
+    total = db.query(func.count(Document.id)).filter(Document.user_id == current_user.id).scalar() or 0
+    by_status = (
+        db.query(Document.status, func.count(Document.id))
+        .filter(Document.user_id == current_user.id)
+        .group_by(Document.status)
+        .all()
+    )
     by_type = (
         db.query(Document.document_type, func.count(Document.id))
+        .filter(Document.user_id == current_user.id)
         .group_by(Document.document_type)
         .all()
     )
-    avg_confidence = db.query(func.avg(Document.ai_confidence)).scalar()
+    avg_confidence = (
+        db.query(func.avg(Document.ai_confidence))
+        .filter(Document.user_id == current_user.id)
+        .scalar()
+    )
     avg_total = (
-        db.query(func.avg(Document.total_amount)).filter(Document.total_amount.isnot(None)).scalar()
+        db.query(func.avg(Document.total_amount))
+        .filter(Document.user_id == current_user.id, Document.total_amount.isnot(None))
+        .scalar()
     )
 
     return {
@@ -235,10 +262,11 @@ def get_stats(db: Session = Depends(get_db_for_fastapi)) -> dict[str, Any]:
 def export_csv(
     status: str | None = Query(default=None),
     document_type: str | None = Query(default=None),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db_for_fastapi),
 ) -> StreamingResponse:
-    """Export document summaries as CSV. Streams — no memory limit."""
-    query = db.query(Document)
+    """Export document summaries as CSV for the logged-in user. Streams — no memory limit."""
+    query = db.query(Document).filter(Document.user_id == current_user.id)
     if status:
         with contextlib.suppress(ValueError):
             query = query.filter(Document.status == status)
@@ -302,13 +330,21 @@ def export_csv(
 def search_documents(
     q: str = Query(..., description="Search across extracted field values"),
     field_name: str | None = Query(default=None, description="Restrict to specific field name"),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db_for_fastapi),
 ) -> list[dict[str, Any]]:
     """
     Full-text search across ExtractedField values.
-    Returns matching document IDs and the field that matched.
+    Returns matching document IDs and the field that matched for this user.
     """
-    query = db.query(ExtractedField).filter(ExtractedField.field_value.ilike(f"%{q}%"))
+    query = (
+        db.query(ExtractedField)
+        .join(Document)
+        .filter(
+            Document.user_id == current_user.id,
+            ExtractedField.field_value.ilike(f"%{q}%")
+        )
+    )
     if field_name:
         query = query.filter(ExtractedField.field_name == field_name)
 
@@ -325,32 +361,81 @@ def search_documents(
 
 
 @router.get("/{document_id}/status", response_model=DocumentStatusResponse)
-def get_status(document_id: int, db: Session = Depends(get_db_for_fastapi)) -> Document:
+def get_status(
+    document_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db_for_fastapi),
+) -> Document:
     """
     Lightweight status check — no fields returned.
     Poll this every 2-5 seconds after upload until status=completed.
     """
-    doc = db.query(Document).filter(Document.id == document_id).first()
+    doc = db.query(Document).filter(Document.id == document_id, Document.user_id == current_user.id).first()
     if not doc:
-        raise HTTPException(status_code=404, detail=f"Document {document_id} not found")
+        raise HTTPException(status_code=404, detail="Document not found")
     return doc
 
 
 @router.get("/{document_id}/fields", response_model=list[FieldResponse])
-def get_fields(document_id: int, db: Session = Depends(get_db_for_fastapi)) -> list[ExtractedField]:
+def get_fields(
+    document_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db_for_fastapi),
+) -> list[ExtractedField]:
     """All extracted fields for a document. Returns [] if not yet processed."""
-    doc = db.query(Document).filter(Document.id == document_id).first()
+    doc = db.query(Document).filter(Document.id == document_id, Document.user_id == current_user.id).first()
     if not doc:
-        raise HTTPException(status_code=404, detail=f"Document {document_id} not found")
+        raise HTTPException(status_code=404, detail="Document not found")
     return doc.fields
 
 
-@router.get("/{document_id}", response_model=DocumentResponse)
-def get_document(document_id: int, db: Session = Depends(get_db_for_fastapi)) -> Document:
-    """Full document with all extracted fields."""
-    doc = db.query(Document).filter(Document.id == document_id).first()
+@router.get("/{document_id}/download")
+def download_document(
+    document_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db_for_fastapi),
+) -> Response:
+    """Download the original PDF file from S3 or local disk."""
+    doc = db.query(Document).filter(Document.id == document_id, Document.user_id == current_user.id).first()
     if not doc:
-        raise HTTPException(status_code=404, detail=f"Document {document_id} not found")
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    if doc.file_path and doc.file_path.startswith("s3://"):
+        from utils.s3 import download_file_bytes
+        s3_path = doc.file_path[5:]  # Remove "s3://"
+        parts = s3_path.split("/", 1)
+        key = parts[1] if len(parts) == 2 else s3_path
+        try:
+            content = download_file_bytes(key)
+            return Response(
+                content=content,
+                media_type="application/pdf",
+                headers={"Content-Disposition": f'attachment; filename="{doc.file_name}"'},
+            )
+        except Exception as e:
+            raise HTTPException(status_code=404, detail=f"S3 download failed: {e}") from e
+    else:
+        # Local file
+        file_path = _resolve_path(doc)
+        if not file_path or not file_path.exists():
+            raise HTTPException(status_code=404, detail="File not found on local disk")
+        return Response(
+            content=file_path.read_bytes(),
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{doc.file_name}"'},
+        )
+
+
+@router.get("/{document_id}", response_model=DocumentResponse)
+def get_document(
+    document_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db_for_fastapi),
+) -> Document:
+    """Full document with all extracted fields."""
+    doc = db.query(Document).filter(Document.id == document_id, Document.user_id == current_user.id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
     return doc
 
 
@@ -360,10 +445,11 @@ def list_documents(
     document_type: str | None = Query(default=None),
     limit: int = Query(default=20, le=200),
     offset: int = Query(default=0, ge=0),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db_for_fastapi),
 ) -> list[Document]:
-    """List all documents with optional status/type filters."""
-    query = db.query(Document)
+    """List all documents with optional status/type filters for the logged-in user."""
+    query = db.query(Document).filter(Document.user_id == current_user.id)
     if status:
         with contextlib.suppress(ValueError):
             query = query.filter(Document.status == status)
@@ -377,6 +463,7 @@ def list_documents(
 async def reprocess(
     document_id: int,
     background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db_for_fastapi),
 ) -> Document:
     """
@@ -384,9 +471,9 @@ async def reprocess(
     Use when: you updated the prompt, or previous run failed.
     Deletes all existing ExtractedField rows first.
     """
-    doc = db.query(Document).filter(Document.id == document_id).first()
+    doc = db.query(Document).filter(Document.id == document_id, Document.user_id == current_user.id).first()
     if not doc:
-        raise HTTPException(status_code=404, detail=f"Document {document_id} not found")
+        raise HTTPException(status_code=404, detail="Document not found")
 
     # Clear previous extraction
     db.query(ExtractedField).filter(ExtractedField.document_id == document_id).delete()
@@ -406,9 +493,14 @@ async def reprocess(
 def verify_field(
     document_id: int,
     field_id: int,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db_for_fastapi),
 ) -> ExtractedField:
     """Mark a field as human-verified. Used in review workflows."""
+    doc = db.query(Document).filter(Document.id == document_id, Document.user_id == current_user.id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
     field = (
         db.query(ExtractedField)
         .filter(
@@ -425,14 +517,24 @@ def verify_field(
     return field
 
 
-# FIXED
-
-
 @router.delete("/{document_id}", status_code=204, response_class=Response)
-def delete_document(document_id: int, db: Session = Depends(get_db_for_fastapi)):
-    doc = db.query(Document).filter(Document.id == document_id).first()
+def delete_document(
+    document_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db_for_fastapi),
+):
+    doc = db.query(Document).filter(Document.id == document_id, Document.user_id == current_user.id).first()
     if not doc:
-        raise HTTPException(status_code=404, detail=f"Document {document_id} not found")
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    # Delete S3 file if present
+    if doc.file_path and doc.file_path.startswith("s3://"):
+        from utils.s3 import delete_file
+        s3_path = doc.file_path[5:]
+        parts = s3_path.split("/", 1)
+        key = parts[1] if len(parts) == 2 else s3_path
+        delete_file(key)
+
     db.delete(doc)
     db.commit()
     # return nothing — 204 No Content

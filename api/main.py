@@ -13,12 +13,10 @@ from __future__ import annotations
 
 import logging
 import os
-import traceback
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 
 from api.export import router as export_router
 from api.routes.documents import router as documents_router
@@ -44,7 +42,7 @@ async def lifespan(app: FastAPI):  # type: ignore[type-arg]
 
 app = FastAPI(
     title="AI Document Intelligence API",
-    debug=True,
+    debug=False,
     description=(
         "Upload PDF documents — invoices, contracts, receipts. "
         "Claude Sonnet extracts structured fields automatically. "
@@ -55,13 +53,6 @@ app = FastAPI(
     redoc_url="/redoc",
     lifespan=lifespan,
 )
-
-
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    tb = traceback.format_exc()
-    logger.error("Unhandled exception: %s\n%s", exc, tb)
-    return JSONResponse(status_code=500, content={"error": str(exc), "traceback": tb})
 
 
 app.add_middleware(

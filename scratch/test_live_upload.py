@@ -1,6 +1,5 @@
-import urllib.request
 import urllib.error
-import mimetypes
+import urllib.request
 
 
 def upload_test():
@@ -13,12 +12,12 @@ def upload_test():
     )
 
     body = []
-    body.append(f"--{boundary}".encode("utf-8"))
+    body.append(f"--{boundary}".encode())
     body.append(b'Content-Disposition: form-data; name="file"; filename="test.pdf"')
     body.append(b"Content-Type: application/pdf")
     body.append(b"")
     body.append(pdf_content)
-    body.append(f"--{boundary}--".encode("utf-8"))
+    body.append(f"--{boundary}--".encode())
     body.append(b"")
 
     data = b"\r\n".join(body)
