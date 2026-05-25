@@ -153,7 +153,8 @@ def register(body: RegisterRequest, db: Session = Depends(get_db_for_fastapi)):
     from email.mime.text import MIMEText
 
     smtp_host = os.getenv("SMTP_HOST")
-    smtp_port = int(os.getenv("SMTP_PORT", "587"))
+    smtp_port_raw = os.getenv("SMTP_PORT", "587")
+    smtp_port = int(smtp_port_raw) if smtp_port_raw and smtp_port_raw.isdigit() else 587
     smtp_user = os.getenv("SMTP_USER")
     smtp_pass = os.getenv("SMTP_PASSWORD")
     frontend_url = os.getenv("FRONTEND_URL", "https://your-app.netlify.app")
@@ -360,7 +361,8 @@ def forgot_password(body: ForgotPasswordRequest, db: Session = Depends(get_db_fo
 
         # Send reset email if SMTP configured
         smtp_host = os.getenv("SMTP_HOST")
-        smtp_port = int(os.getenv("SMTP_PORT", "587"))
+        smtp_port_raw = os.getenv("SMTP_PORT", "587")
+        smtp_port = int(smtp_port_raw) if smtp_port_raw and smtp_port_raw.isdigit() else 587
         smtp_user = os.getenv("SMTP_USER")
         smtp_pass = os.getenv("SMTP_PASSWORD")
         frontend_url = os.getenv("FRONTEND_URL", "https://your-app.netlify.app")
