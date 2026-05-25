@@ -126,7 +126,7 @@ def test_health_endpoint(client):
 
 
 def test_stats_endpoint(client):
-    response = client.get("/stats")
+    response = client.get("/api/v1/stats")
     assert response.status_code == 200
     data = response.json()
     assert "total_documents" in data

@@ -35,34 +35,43 @@ def init_db() -> None:
     logger.info("Initializing database schema…")
     Base.metadata.create_all(bind=engine)
 
-    # Self-healing database schema: add missing columns to documents if table already existed
+    # Self-healing database schema: add missing columns to documents/users if tables already existed
     db = SessionLocal()
-    try:
-        logger.info("Verifying documents table schema and applying self-healing alters if needed...")
-        db.execute(text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS user_id INTEGER"))
-        db.execute(text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS ip_address VARCHAR(45)"))
-        db.execute(text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP"))
+    
+    # 1. Apply column additions first, committing each one independently.
+    columns_to_add = [
+        # documents table
+        ("documents", "user_id", "INTEGER"),
+        ("documents", "ip_address", "VARCHAR(45)"),
+        ("documents", "expires_at", "TIMESTAMP"),
+        # users table
+        ("users", "is_verified", "BOOLEAN DEFAULT FALSE"),
+        ("users", "verification_token", "VARCHAR(64)"),
+        ("users", "reset_token", "VARCHAR(64)"),
+        ("users", "reset_token_expires_at", "TIMESTAMP"),
+    ]
 
-        # Self-healing: new user columns for email verification & password reset
-        db.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_token VARCHAR(64)"))
-        db.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token VARCHAR(64)"))
-        db.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_expires_at TIMESTAMP"))
-
-        # Try to add foreign key constraint. It might fail if already exists, which we catch.
+    logger.info("Verifying table schemas and applying self-healing alters if needed...")
+    for table, column, col_type in columns_to_add:
         try:
-            db.execute(text(
-                "ALTER TABLE documents ADD CONSTRAINT fk_documents_user_id "
-                "FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL"
-            ))
-        except Exception:
+            db.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {col_type}"))
+            db.commit()
+            logger.info("Column %s.%s checked/added successfully.", table, column)
+        except Exception as e:
             db.rollback()
-            logger.info("Foreign key constraint fk_documents_user_id might already exist or users table was not ready.")
+            logger.warning("Could not check/add column %s.%s: %s", table, column, e)
 
+    # 2. Try to add foreign key constraint in a separate transaction
+    try:
+        db.execute(text(
+            "ALTER TABLE documents ADD CONSTRAINT fk_documents_user_id "
+            "FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL"
+        ))
         db.commit()
-        logger.info("Database schema verification and healing completed.")
-    except Exception as exc:
+        logger.info("Foreign key constraint fk_documents_user_id verified/added.")
+    except Exception as e:
         db.rollback()
-        logger.error("Error during database schema healing: %s", exc)
+        logger.info("Foreign key constraint fk_documents_user_id not added (it may already exist): %s", e)
     finally:
         db.close()
 

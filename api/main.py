@@ -83,7 +83,7 @@ app.add_middleware(
     expose_headers=["Content-Disposition"],  # ← critical for file downloads
 )
 
-app.include_router(export_router)
+app.include_router(export_router, prefix="/api/v1")
 app.include_router(auth_router, prefix="/auth", tags=["Authentication"])
 app.include_router(documents_router, prefix="/api/v1")
 

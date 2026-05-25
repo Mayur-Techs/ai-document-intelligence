@@ -44,7 +44,7 @@ from sqlalchemy.orm import Session
 from auth.core import get_current_user, get_optional_user
 from auth.rate_limit import enforce_rate_limit
 from database.connection import get_db_for_fastapi
-from database.models import Document, DocumentType, ExtractedField, ProcessingStatus, User
+from database.models import Document, DocumentType, ExtractedField, Feedback, ProcessingStatus, User
 from extractor.pipeline import _resolve_path, process_document
 from upload.handler import save_upload, validate_file
 
@@ -109,6 +109,11 @@ class UploadResponse(BaseModel):
     file_size_bytes: int
     status: str
     message: str
+
+
+class FeedbackRequest(BaseModel):
+    rating: str  # "positive" | "negative"
+    comment: str | None = None
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -538,3 +543,34 @@ def delete_document(
     db.delete(doc)
     db.commit()
     # return nothing — 204 No Content
+
+
+@router.post("/{document_id}/feedback")
+def submit_feedback(
+    document_id: int,
+    req: FeedbackRequest,
+    request: Request,
+    current_user: User | None = Depends(get_optional_user),
+    db: Session = Depends(get_db_for_fastapi),
+):
+    """Submit thumbs up/down feedback for an extraction."""
+    query = db.query(Document).filter(Document.id == document_id)
+    if current_user:
+        query = query.filter(Document.user_id == current_user.id)
+    doc = query.first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    rating_val = 1 if req.rating == "positive" else -1
+    ip = request.client.host if request.client else None
+
+    feedback = Feedback(
+        document_id=document_id,
+        user_id=current_user.id if current_user else None,
+        ip_address=ip if not current_user else None,
+        rating=rating_val,
+        comment=req.comment,
+    )
+    db.add(feedback)
+    db.commit()
+    return {"success": True, "message": "Feedback submitted successfully"}

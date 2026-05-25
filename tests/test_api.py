@@ -268,3 +268,39 @@ class TestDelete:
 
     def test_delete_not_found(self, client):
         assert client.delete("/api/v1/documents/99999").status_code == 404
+
+
+# ── Feedback ──────────────────────────────────────────────────────────────────
+class TestFeedback:
+    def test_submit_feedback_success(self, client):
+        db = TestSessionLocal()
+        doc = Document(file_name="feed.pdf", file_path="/feed.pdf", file_size_bytes=500, user_id=1)
+        db.add(doc)
+        db.commit()
+        doc_id = doc.id
+        db.close()
+
+        # Send feedback request
+        r = client.post(
+            f"/api/v1/documents/{doc_id}/feedback",
+            json={"rating": "positive", "comment": "Excellent extraction accuracy!"}
+        )
+        assert r.status_code == 200
+        assert r.json()["success"] is True
+
+        # Verify database record
+        db = TestSessionLocal()
+        from database.models import Feedback
+        feedback_rec = db.query(Feedback).filter(Feedback.document_id == doc_id).first()
+        assert feedback_rec is not None
+        assert feedback_rec.rating == 1
+        assert feedback_rec.comment == "Excellent extraction accuracy!"
+        db.close()
+
+    def test_submit_feedback_not_found(self, client):
+        r = client.post(
+            "/api/v1/documents/99999/feedback",
+            json={"rating": "negative"}
+        )
+        assert r.status_code == 404
+
