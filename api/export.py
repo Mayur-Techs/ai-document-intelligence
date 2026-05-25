@@ -34,8 +34,9 @@ from openpyxl.utils import get_column_letter
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from auth.core import get_current_user
 from database.connection import get_db_for_fastapi
-from database.models import Document, ExtractedField
+from database.models import Document, ExtractedField, User
 
 router = APIRouter(tags=["export"])
 
@@ -45,9 +46,15 @@ router = APIRouter(tags=["export"])
 # ─────────────────────────────────────────────────────────────
 
 
-def _get_doc_and_fields(doc_id: int, db: Session):
-    doc = db.query(Document).filter(Document.id == doc_id).first()
+def _get_doc_and_fields(doc_id: int, db: Session, user: User):
+    """Fetch doc + fields, enforcing ownership. Returns 404 if not found or not owned."""
+    doc = (
+        db.query(Document)
+        .filter(Document.id == doc_id, Document.user_id == user.id)
+        .first()
+    )
     if not doc:
+        # Deliberately 404 not 403: don't reveal that the document exists
         raise HTTPException(status_code=404, detail="Document not found")
     fields = db.query(ExtractedField).filter(ExtractedField.document_id == doc_id).all()
     return doc, fields
@@ -76,9 +83,13 @@ def _line_item_rows(fields) -> list[dict]:
 
 
 @router.get("/documents/{doc_id}/export/csv")
-def export_csv(doc_id: int, db: Session = Depends(get_db_for_fastapi)):
-    """Download extracted invoice data as a CSV file."""
-    doc, fields = _get_doc_and_fields(doc_id, db)
+def export_csv(
+    doc_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db_for_fastapi),
+):
+    """Download extracted invoice data as a CSV file (only for documents you own)."""
+    doc, fields = _get_doc_and_fields(doc_id, db, current_user)
     scalars = _scalar_rows(fields)
     line_items = _line_item_rows(fields)
 
@@ -236,9 +247,13 @@ def _build_excel(doc, scalars: dict, line_items: list[dict]) -> bytes:
 
 
 @router.get("/documents/{doc_id}/export/excel")
-def export_excel(doc_id: int, db: Session = Depends(get_db_for_fastapi)):
-    """Download extracted invoice data as a formatted Excel (.xlsx) file."""
-    doc, fields = _get_doc_and_fields(doc_id, db)
+def export_excel(
+    doc_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db_for_fastapi),
+):
+    """Download extracted invoice data as a formatted Excel (.xlsx) file (only for documents you own)."""
+    doc, fields = _get_doc_and_fields(doc_id, db, current_user)
     scalars = _scalar_rows(fields)
     line_items = _line_item_rows(fields)
 
@@ -258,9 +273,14 @@ def export_excel(doc_id: int, db: Session = Depends(get_db_for_fastapi)):
 
 
 @router.get("/documents/{doc_id}/export/email")
-def export_email(doc_id: int, to: str, db: Session = Depends(get_db_for_fastapi)):
+def export_email(
+    doc_id: int,
+    to: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db_for_fastapi),
+):
     """
-    Send the Excel file to the given email address.
+    Send the Excel file to the given email address (only for documents you own).
     Requires these env vars:
         SMTP_HOST     e.g. smtp.gmail.com
         SMTP_PORT     e.g. 587
@@ -281,7 +301,7 @@ def export_email(doc_id: int, to: str, db: Session = Depends(get_db_for_fastapi)
             ),
         )
 
-    doc, fields = _get_doc_and_fields(doc_id, db)
+    doc, fields = _get_doc_and_fields(doc_id, db, current_user)
     scalars = _scalar_rows(fields)
     line_items = _line_item_rows(fields)
     xlsx_bytes = _build_excel(doc, scalars, line_items)

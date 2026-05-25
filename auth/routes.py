@@ -120,6 +120,12 @@ def register(body: RegisterRequest, db: Session = Depends(get_db_for_fastapi)):
         files_used_month=0,
         last_reset_date=datetime.now(timezone.utc),
     )
+
+    # Generate email verification token
+    import secrets
+    verification_token = secrets.token_hex(32)
+    user.verification_token = verification_token
+
     db.add(user)
     db.flush()  # get the user.id without committing
 
@@ -140,6 +146,40 @@ def register(body: RegisterRequest, db: Session = Depends(get_db_for_fastapi)):
     db.add(session)
     db.commit()
 
+    # Send verification email if SMTP configured (non-blocking — registration succeeds either way)
+    import os
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+
+    smtp_host = os.getenv("SMTP_HOST")
+    smtp_port = int(os.getenv("SMTP_PORT", "587"))
+    smtp_user = os.getenv("SMTP_USER")
+    smtp_pass = os.getenv("SMTP_PASSWORD")
+    frontend_url = os.getenv("FRONTEND_URL", "https://your-app.netlify.app")
+
+    if smtp_host and smtp_user and smtp_pass:
+        verify_link = f"{frontend_url}/verify-email.html?token={verification_token}&email={body.email}"
+        msg = MIMEMultipart()
+        msg["From"] = smtp_user
+        msg["To"] = body.email
+        msg["Subject"] = "Verify your AI Document Intelligence account"
+        body_text = (
+            f"Welcome to AI Document Intelligence!\n\n"
+            f"Please verify your email address by clicking the link below:\n\n"
+            f"{verify_link}\n\n"
+            f"This link does not expire.\n\n"
+            f"— AI Document Intelligence"
+        )
+        msg.attach(MIMEText(body_text, "plain"))
+        try:
+            with smtplib.SMTP(smtp_host, smtp_port) as server:
+                server.starttls()
+                server.login(smtp_user, smtp_pass)
+                server.sendmail(smtp_user, body.email, msg.as_string())
+        except Exception:
+            pass  # Don't block registration if email fails
+
     return AuthResponse(
         access_token=token,
         user_id=user.id,
@@ -147,6 +187,7 @@ def register(body: RegisterRequest, db: Session = Depends(get_db_for_fastapi)):
         plan=user.plan.value,
         message="Welcome! Your free account gives you 20 extractions per day.",
     )
+
 
 
 # ─────────────────────────────────────────────────────────────
@@ -234,7 +275,7 @@ def logout(
         db.query(DBSession)
         .filter(
             DBSession.user_id == current_user.id,
-            DBSession.is_revoked is False,
+            DBSession.is_revoked == False,  # noqa: E712  must use == for SQLAlchemy SQL generation
         )
         .order_by(DBSession.created_at.desc())
         .first()
@@ -274,3 +315,172 @@ def get_me(current_user: User = Depends(get_current_user)):
         monthly_limit=limits["files"] if current_user.plan != UserPlan.free else 0,
         created_at=current_user.created_at,
     )
+
+
+# ─────────────────────────────────────────────────────────────
+#  POST /auth/forgot-password
+#  Generates a one-time reset token and emails it.
+#  Security: we always return 200 regardless of whether email exists.
+#  This prevents account enumeration attacks.
+# ─────────────────────────────────────────────────────────────
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+@router.post("/forgot-password")
+def forgot_password(body: ForgotPasswordRequest, db: Session = Depends(get_db_for_fastapi)):
+    """
+    Request a password reset link via email.
+
+    Always returns 200 — never reveals whether the email is registered.
+    If SMTP is configured, the user receives a reset link valid for 1 hour.
+    """
+    import hashlib
+    import os
+    import secrets
+    import smtplib
+    from datetime import timedelta
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+
+    # Always respond 200 to prevent account enumeration
+    user = db.query(User).filter(User.email == body.email.lower()).first()
+
+    if user:
+        # Generate a cryptographically secure token
+        raw_token = secrets.token_hex(32)
+        # Store only the SHA-256 hash — raw token stays only in the email
+        token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+
+        user.reset_token = token_hash
+        user.reset_token_expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+        db.commit()
+
+        # Send reset email if SMTP configured
+        smtp_host = os.getenv("SMTP_HOST")
+        smtp_port = int(os.getenv("SMTP_PORT", "587"))
+        smtp_user = os.getenv("SMTP_USER")
+        smtp_pass = os.getenv("SMTP_PASSWORD")
+        frontend_url = os.getenv("FRONTEND_URL", "https://your-app.netlify.app")
+
+        if smtp_host and smtp_user and smtp_pass:
+            reset_link = f"{frontend_url}/reset-password.html?token={raw_token}&email={body.email}"
+            msg = MIMEMultipart()
+            msg["From"] = smtp_user
+            msg["To"] = body.email
+            msg["Subject"] = "Reset your AI Document Intelligence password"
+            body_text = (
+                f"You requested a password reset.\n\n"
+                f"Click the link below to reset your password (valid for 1 hour):\n\n"
+                f"{reset_link}\n\n"
+                f"If you didn't request this, you can safely ignore this email.\n\n"
+                f"— AI Document Intelligence"
+            )
+            msg.attach(MIMEText(body_text, "plain"))
+            try:
+                with smtplib.SMTP(smtp_host, smtp_port) as server:
+                    server.starttls()
+                    server.login(smtp_user, smtp_pass)
+                    server.sendmail(smtp_user, body.email, msg.as_string())
+            except Exception:
+                pass  # Don't leak SMTP errors to the user
+
+    return {"message": "If that email is registered, a reset link has been sent."}
+
+
+# ─────────────────────────────────────────────────────────────
+#  POST /auth/reset-password
+#  Validates the token and sets the new password.
+# ─────────────────────────────────────────────────────────────
+
+
+class ResetPasswordRequest(BaseModel):
+    email: EmailStr
+    token: str  # the raw token from the email link
+    new_password: str
+
+    @field_validator("new_password")
+    @classmethod
+    def password_strength(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError("Password must be at least 8 characters.")
+        return v
+
+
+@router.post("/reset-password")
+def reset_password(body: ResetPasswordRequest, db: Session = Depends(get_db_for_fastapi)):
+    """
+    Reset the password using the one-time token from the email link.
+    Token is valid for 1 hour and can only be used once.
+    """
+    import hashlib
+
+    invalid = HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="Invalid or expired reset token.",
+    )
+
+    user = db.query(User).filter(User.email == body.email.lower()).first()
+    if not user or not user.reset_token or not user.reset_token_expires_at:
+        raise invalid
+
+    # Check expiry
+    expires = user.reset_token_expires_at
+    # Make timezone-aware for comparison
+    if expires.tzinfo is None:
+        from datetime import timezone as _tz
+        expires = expires.replace(tzinfo=_tz.utc)
+    if datetime.now(timezone.utc) > expires:
+        raise invalid
+
+    # Compare hash of submitted token against stored hash
+    submitted_hash = hashlib.sha256(body.token.encode()).hexdigest()
+    if submitted_hash != user.reset_token:
+        raise invalid
+
+    # All checks passed — set new password and clear token
+    user.hashed_password = hash_password(body.new_password)
+    user.reset_token = None
+    user.reset_token_expires_at = None
+    db.commit()
+
+    return {"message": "Password reset successfully. You can now log in with your new password."}
+
+
+# ─────────────────────────────────────────────────────────────
+#  POST /auth/verify-email
+#  Validates the email verification token sent on signup.
+# ─────────────────────────────────────────────────────────────
+
+
+class VerifyEmailRequest(BaseModel):
+    email: EmailStr
+    token: str
+
+
+@router.post("/verify-email")
+def verify_email(body: VerifyEmailRequest, db: Session = Depends(get_db_for_fastapi)):
+    """
+    Verify email address using the token sent on registration.
+    Marks the account as is_verified=True and clears the token.
+    """
+    invalid = HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="Invalid or already-used verification token.",
+    )
+
+    user = db.query(User).filter(User.email == body.email.lower()).first()
+    if not user or not user.verification_token:
+        raise invalid
+
+    if user.verification_token != body.token:
+        raise invalid
+
+    user.is_verified = True
+    user.verification_token = None
+    db.commit()
+
+    return {"message": "Email verified successfully. Your account is now active."}
+

@@ -43,6 +43,11 @@ def init_db() -> None:
         db.execute(text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS ip_address VARCHAR(45)"))
         db.execute(text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP"))
 
+        # Self-healing: new user columns for email verification & password reset
+        db.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_token VARCHAR(64)"))
+        db.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token VARCHAR(64)"))
+        db.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_expires_at TIMESTAMP"))
+
         # Try to add foreign key constraint. It might fail if already exists, which we catch.
         try:
             db.execute(text(

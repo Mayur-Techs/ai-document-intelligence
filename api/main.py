@@ -36,8 +36,27 @@ async def lifespan(app: FastAPI):  # type: ignore[type-arg]
     upload_dir = os.getenv("UPLOAD_DIR", "data/raw")
     os.makedirs(upload_dir, exist_ok=True)
     logger.info("API ready. Upload dir: %s | Docs: /docs", upload_dir)
+
+    # Production readiness checks — warn loudly in logs if env vars are missing
+    if not os.getenv("SMTP_HOST"):
+        logger.warning(
+            "SMTP_HOST not set — email verification, password reset, and document email-export "
+            "are DISABLED. Set SMTP_HOST, SMTP_USER, SMTP_PASSWORD in Render environment variables."
+        )
+    if not os.getenv("AWS_STORAGE_BUCKET_NAME"):
+        logger.warning(
+            "AWS_STORAGE_BUCKET_NAME not set — PDF files will be stored on Render's ephemeral "
+            "disk and DELETED on every redeploy. Set S3/R2 credentials to enable persistent storage."
+        )
+    if os.getenv("JWT_SECRET", "change-me-in-production") == "change-me-in-production":
+        logger.warning(
+            "JWT_SECRET is using the default insecure value! "
+            "Set a strong random JWT_SECRET in Render environment variables immediately."
+        )
+
     yield
     logger.info("Shutting down AI Document Intelligence API.")
+
 
 
 app = FastAPI(

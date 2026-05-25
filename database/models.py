@@ -93,6 +93,13 @@ class User(Base):
     is_active = Column(Boolean, default=True, nullable=False)
     is_verified = Column(Boolean, default=False, nullable=False)  # email verified
 
+    # Email verification — token is emailed on signup, cleared on successful verify
+    verification_token = Column(String(64), nullable=True, index=True)
+
+    # Password reset — one-time token, expires after 1 hour
+    reset_token = Column(String(64), nullable=True, index=True)
+    reset_token_expires_at = Column(DateTime, nullable=True)
+
     # Usage tracking
     files_used_today = Column(Integer, default=0)
     files_used_month = Column(Integer, default=0)
