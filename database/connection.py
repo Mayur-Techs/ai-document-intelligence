@@ -49,7 +49,11 @@ def init_db() -> None:
         ("users", "verification_token", "VARCHAR(64)"),
         ("users", "reset_token", "VARCHAR(64)"),
         ("users", "reset_token_expires_at", "TIMESTAMP"),
+        ("users", "files_used_today", "INTEGER DEFAULT 0"),
+        ("users", "files_used_month", "INTEGER DEFAULT 0"),
+        ("users", "last_reset_date", "TIMESTAMP"),
     ]
+
 
     logger.info("Verifying table schemas and applying self-healing alters if needed...")
     for table, column, col_type in columns_to_add:

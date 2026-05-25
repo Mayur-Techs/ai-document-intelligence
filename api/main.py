@@ -90,4 +90,23 @@ app.include_router(documents_router, prefix="/api/v1")
 
 @app.get("/health")
 async def health() -> dict:
-    return {"status": "ok", "version": app.version, "service": "doc-intelligence"}
+    from database.connection import SessionLocal
+    from sqlalchemy import inspect
+
+    schema_info = {}
+    try:
+        db = SessionLocal()
+        inspector = inspect(db.get_bind())
+        for table_name in inspector.get_table_names():
+            schema_info[table_name] = [col["name"] for col in inspector.get_columns(table_name)]
+        db.close()
+    except Exception as e:
+        schema_info["error"] = str(e)
+
+    return {
+        "status": "ok",
+        "version": app.version,
+        "service": "doc-intelligence",
+        "schema": schema_info
+    }
+
