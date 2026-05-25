@@ -34,7 +34,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
-from passlib.context import CryptContext
+import bcrypt
 from sqlalchemy.orm import Session
 
 from database.connection import get_db_for_fastapi
@@ -56,17 +56,19 @@ ACCESS_TOKEN_EXPIRE_HOURS = 24  # token valid for 24 hours
 #  CryptContext handles bcrypt automatically
 # ─────────────────────────────────────────────────────────────
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-
 def hash_password(plain: str) -> str:
     """Turn 'mypassword' into '$2b$12$...' — one way, can't reverse."""
-    return pwd_context.hash(plain)
+    plain_bytes = plain.encode("utf-8")
+    hashed_bytes = bcrypt.hashpw(plain_bytes, bcrypt.gensalt(rounds=12))
+    return hashed_bytes.decode("utf-8")
 
 
 def verify_password(plain: str, hashed: str) -> bool:
     """Check if typed password matches stored hash. Returns True/False."""
-    return pwd_context.verify(plain, hashed)
+    try:
+        return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+    except Exception:
+        return False
 
 
 # ─────────────────────────────────────────────────────────────
