@@ -31,8 +31,7 @@ import os
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi import Depends, Cookie, HTTPException, status
 from jose import JWTError, jwt
 import bcrypt
 from sqlalchemy.orm import Session
@@ -57,18 +56,15 @@ ACCESS_TOKEN_EXPIRE_HOURS = 24  # token valid for 24 hours
 # ─────────────────────────────────────────────────────────────
 
 def hash_password(plain: str) -> str:
-    """Turn 'mypassword' into '$2b$12$...' — one way, can't reverse."""
-    plain_bytes = plain.encode("utf-8")
-    hashed_bytes = bcrypt.hashpw(plain_bytes, bcrypt.gensalt(rounds=12))
-    return hashed_bytes.decode("utf-8")
+    salt = bcrypt.gensalt(rounds=12)
+    return bcrypt.hashpw(plain.encode('utf-8'), salt).decode('utf-8')
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    """Check if typed password matches stored hash. Returns True/False."""
-    try:
-        return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
-    except Exception:
-        return False
+    return bcrypt.checkpw(
+        plain.encode('utf-8'),
+        hashed.encode('utf-8')
+    )
 
 
 # ─────────────────────────────────────────────────────────────
@@ -113,38 +109,26 @@ def create_access_token(user_id: int, role: str) -> tuple[str, str]:
 #         to any route you want to protect
 # ─────────────────────────────────────────────────────────────
 
-bearer_scheme = HTTPBearer(auto_error=False)
-
-
 def get_current_user(
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    access_token: str | None = Cookie(default=None),
     db: Session = Depends(get_db_for_fastapi),
 ) -> User:
     """
     FastAPI dependency — protects any route it's added to.
-
-    Flow:
-      1. Read token from "Authorization: Bearer <token>" header
-      2. Decode and verify signature + expiry
-      3. Check token not revoked in sessions table
-      4. Load and return the User from DB
-
-    If anything fails → 401 Unauthorized
+    Reads token from HttpOnly access_token cookie.
+    If anything fails → 401 Unauthorized.
     """
     credentials_error = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Not authenticated. Please log in.",
-        headers={"WWW-Authenticate": "Bearer"},
     )
 
-    if not credentials:
+    if not access_token:
         raise credentials_error
-
-    token = credentials.credentials
 
     # Step 1 — decode and verify signature
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(access_token, SECRET_KEY, algorithms=[ALGORITHM])
     except JWTError:
         raise credentials_error from None
 
@@ -160,23 +144,20 @@ def get_current_user(
         db.query(DBSession)
         .filter(
             DBSession.jti == jti,
-            DBSession.is_revoked is False,
+            DBSession.is_revoked == False,
         )
         .first()
     )
 
     if not session:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Session expired or logged out. Please log in again.",
-        )
+        raise credentials_error
 
     # Step 4 — load user
     user = (
         db.query(User)
         .filter(
             User.id == int(user_id),
-            User.is_active is True,
+            User.is_active == True,
         )
         .first()
     )
@@ -188,18 +169,15 @@ def get_current_user(
 
 
 def get_optional_user(
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    access_token: str | None = Cookie(default=None),
     db: Session = Depends(get_db_for_fastapi),
 ) -> User | None:
     """
-    Same as get_current_user but doesn't raise if not logged in.
-    Returns None for anonymous users.
-    Used on routes that work for both logged-in and anonymous users.
-    Example: /upload works for both, but logged-in users get more files.
+    Same as get_current_user but returns None if cookie is missing/invalid.
     """
-    if not credentials:
+    if not access_token:
         return None
     try:
-        return get_current_user(credentials, db)
+        return get_current_user(access_token, db)
     except HTTPException:
         return None

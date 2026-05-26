@@ -53,7 +53,7 @@ def client():
     app.dependency_overrides[get_db_for_fastapi] = override_get_db
     with patch("database.connection.Base") as mock_base:
         mock_base.metadata.create_all.return_value = None
-        with TestClient(app) as c:
+        with TestClient(app, base_url="https://testserver") as c:
             yield c
     app.dependency_overrides.clear()
 
@@ -71,6 +71,8 @@ def test_register_success(client):
         },
     )
     assert response.status_code in (201, 409)
+    if response.status_code == 201:
+        assert "access_token" in response.cookies
 
 
 def test_register_weak_password(client):
@@ -118,6 +120,50 @@ def test_login_wrong_password(client):
 def test_protected_route_no_token(client):
     response = client.get("/auth/me")
     assert response.status_code == 401
+
+
+def test_login_success_and_profile_flow(client):
+    email = "flow_user@example.com"
+    password = "flowpassword123"
+
+    # 1. Register
+    reg_res = client.post(
+        "/auth/register",
+        json={
+            "email": email,
+            "password": password,
+            "full_name": "Flow User",
+        },
+    )
+    assert reg_res.status_code == 201
+    assert "access_token" in reg_res.cookies
+
+    # Clear client cookies to test login in isolation
+    client.cookies.clear()
+
+    # 2. Login
+    login_res = client.post(
+        "/auth/login",
+        json={
+            "email": email,
+            "password": password,
+        },
+    )
+    assert login_res.status_code == 200
+    assert "access_token" in login_res.cookies
+
+    # 3. Access profile (Client automatically retains cookies)
+    profile_res = client.get("/auth/me")
+    assert profile_res.status_code == 200
+    assert profile_res.json()["email"] == email
+
+    # 4. Logout
+    logout_res = client.post("/auth/logout")
+    assert logout_res.status_code == 200
+
+    # 5. Access profile after logout should fail
+    profile_after_logout = client.get("/auth/me")
+    assert profile_after_logout.status_code == 401
 
 
 def test_health_endpoint(client):

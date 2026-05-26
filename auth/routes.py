@@ -15,15 +15,19 @@ How to register this in api/main.py:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import os
+from datetime import datetime, timezone, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Response
+from google.oauth2 import id_token
+from google.auth.transport import requests as google_requests
 from pydantic import BaseModel, EmailStr, field_validator
 from sqlalchemy.orm import Session
 
 from auth.core import (
     create_access_token,
     get_current_user,
+    get_optional_user,
     hash_password,
     verify_password,
 )
@@ -32,6 +36,7 @@ from database.models import Session as DBSession
 from database.models import User, UserPlan
 
 router = APIRouter()
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -87,8 +92,12 @@ class UserProfile(BaseModel):
 # ─────────────────────────────────────────────────────────────
 
 
-@router.post("/register", response_model=AuthResponse, status_code=201)
-def register(body: RegisterRequest, db: Session = Depends(get_db_for_fastapi)):
+@router.post("/register", status_code=201)
+def register(
+    body: RegisterRequest,
+    response: Response,
+    db: Session = Depends(get_db_for_fastapi),
+):
     """
     Create a new account.
 
@@ -97,8 +106,8 @@ def register(body: RegisterRequest, db: Session = Depends(get_db_for_fastapi)):
       2. Hash the password with bcrypt
       3. Create user record
       4. Create JWT token immediately (auto-login after signup)
-      5. Store session
-      6. Return token
+      5. Store session in DB
+      6. Set HttpOnly secure cookie on the response
     """
     # Check duplicate email
     existing = db.query(User).filter(User.email == body.email.lower()).first()
@@ -133,25 +142,16 @@ def register(body: RegisterRequest, db: Session = Depends(get_db_for_fastapi)):
     token, jti = create_access_token(user.id, user.plan.value)
 
     # Store session
-    from datetime import timedelta
-
-    from auth.core import ACCESS_TOKEN_EXPIRE_HOURS
-
     session = DBSession(
         user_id=user.id,
         jti=jti,
         is_revoked=False,
-        expires_at=datetime.now(timezone.utc) + timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS),
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
     )
     db.add(session)
     db.commit()
 
     # Send verification email if SMTP configured (non-blocking — registration succeeds either way)
-    import os
-    import smtplib
-    from email.mime.multipart import MIMEMultipart
-    from email.mime.text import MIMEText
-
     smtp_host = os.getenv("SMTP_HOST")
     smtp_port_raw = os.getenv("SMTP_PORT", "587")
     smtp_port = int(smtp_port_raw) if smtp_port_raw and smtp_port_raw.isdigit() else 587
@@ -161,6 +161,9 @@ def register(body: RegisterRequest, db: Session = Depends(get_db_for_fastapi)):
 
     if smtp_host and smtp_user and smtp_pass:
         verify_link = f"{frontend_url}/verify-email.html?token={verification_token}&email={body.email}"
+        from email.mime.multipart import MIMEMultipart
+        from email.mime.text import MIMEText
+        import smtplib
         msg = MIMEMultipart()
         msg["From"] = smtp_user
         msg["To"] = body.email
@@ -181,13 +184,21 @@ def register(body: RegisterRequest, db: Session = Depends(get_db_for_fastapi)):
         except Exception:
             pass  # Don't block registration if email fails
 
-    return AuthResponse(
-        access_token=token,
-        user_id=user.id,
-        email=user.email,
-        plan=user.plan.value,
-        message="Welcome! Your free account gives you 20 extractions per day.",
+    response.set_cookie(
+        key="access_token",
+        value=token,
+        httponly=True,      # JS cannot read this
+        secure=True,        # HTTPS only
+        samesite="lax",     # CSRF protection
+        max_age=86400,      # 24 hours in seconds
+        path="/",
     )
+
+    return {
+        "message": "Welcome! Your free account gives you 20 extractions per day.",
+        "email": user.email,
+        "plan": user.plan.value,
+    }
 
 
 
@@ -196,14 +207,14 @@ def register(body: RegisterRequest, db: Session = Depends(get_db_for_fastapi)):
 # ─────────────────────────────────────────────────────────────
 
 
-@router.post("/login", response_model=AuthResponse)
-def login(body: LoginRequest, db: Session = Depends(get_db_for_fastapi)):
+@router.post("/login")
+def login(
+    body: LoginRequest,
+    response: Response,
+    db: Session = Depends(get_db_for_fastapi),
+):
     """
-    Log in with email and password. Returns JWT token.
-
-    Security note: we always say "invalid credentials" — never
-    "email not found" or "wrong password" separately.
-    Telling attackers which part is wrong helps them enumerate accounts.
+    Log in with email and password. Sets HttpOnly cookie.
     """
     invalid = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -226,15 +237,11 @@ def login(body: LoginRequest, db: Session = Depends(get_db_for_fastapi)):
     # Create token and store session
     token, jti = create_access_token(user.id, user.plan.value)
 
-    from datetime import timedelta
-
-    from auth.core import ACCESS_TOKEN_EXPIRE_HOURS
-
     session = DBSession(
         user_id=user.id,
         jti=jti,
         is_revoked=False,
-        expires_at=datetime.now(timezone.utc) + timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS),
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
     )
     db.add(session)
     db.commit()
@@ -246,13 +253,21 @@ def login(body: LoginRequest, db: Session = Depends(get_db_for_fastapi)):
         "enterprise": "Unlimited",
     }
 
-    return AuthResponse(
-        access_token=token,
-        user_id=user.id,
-        email=user.email,
-        plan=user.plan.value,
-        message=f"Welcome back! Plan: {plan_limits.get(user.plan.value, user.plan.value)}",
+    response.set_cookie(
+        key="access_token",
+        value=token,
+        httponly=True,      # JS cannot read this
+        secure=True,        # HTTPS only
+        samesite="lax",     # CSRF protection
+        max_age=86400,      # 24 hours in seconds
+        path="/",
     )
+
+    return {
+        "message": f"Welcome back! Plan: {plan_limits.get(user.plan.value, user.plan.value)}",
+        "email": user.email,
+        "plan": user.plan.value,
+    }
 
 
 # ─────────────────────────────────────────────────────────────
@@ -262,31 +277,29 @@ def login(body: LoginRequest, db: Session = Depends(get_db_for_fastapi)):
 
 @router.post("/logout")
 def logout(
-    current_user: User = Depends(get_current_user),
+    response: Response,
+    current_user: User | None = Depends(get_optional_user),
     db: Session = Depends(get_db_for_fastapi),
 ):
     """
-    Revoke the current JWT token.
-    The token still exists but is_revoked=True so get_current_user
-    rejects it on every future request.
+    Revoke current JWT session and clear the HttpOnly access_token cookie.
     """
-    # We need to get the jti from the token — it's in the DB session
-    # We find it by user_id + not revoked + most recent
-    session = (
-        db.query(DBSession)
-        .filter(
-            DBSession.user_id == current_user.id,
-            DBSession.is_revoked == False,  # noqa: E712  must use == for SQLAlchemy SQL generation
+    if current_user:
+        session = (
+            db.query(DBSession)
+            .filter(
+                DBSession.user_id == current_user.id,
+                DBSession.is_revoked == False,
+            )
+            .order_by(DBSession.created_at.desc())
+            .first()
         )
-        .order_by(DBSession.created_at.desc())
-        .first()
-    )
+        if session:
+            session.is_revoked = True
+            db.commit()
 
-    if session:
-        session.is_revoked = True
-        db.commit()
-
-    return {"message": "Logged out successfully."}
+    response.delete_cookie(key="access_token", path="/")
+    return {"message": "Logged out"}
 
 
 # ─────────────────────────────────────────────────────────────
@@ -485,4 +498,83 @@ def verify_email(body: VerifyEmailRequest, db: Session = Depends(get_db_for_fast
     db.commit()
 
     return {"message": "Email verified successfully. Your account is now active."}
+
+
+# ─────────────────────────────────────────────────────────────
+#  POST /auth/google
+# ─────────────────────────────────────────────────────────────
+
+
+@router.post("/google")
+def google_login(
+    body: dict,
+    response: Response,
+    db: Session = Depends(get_db_for_fastapi),
+):
+    """
+    Receives Google credential token from frontend.
+    Verifies it with Google. Creates or finds user.
+    Sets HttpOnly cookie. Returns user info.
+    """
+    credential = body.get("credential")
+    if not credential:
+        raise HTTPException(status_code=400, detail="Missing credential")
+
+    try:
+        id_info = id_token.verify_oauth2_token(
+            credential,
+            google_requests.Request(),
+            GOOGLE_CLIENT_ID,
+        )
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Invalid Google token")
+
+    email = id_info["email"]
+    full_name = id_info.get("name", "")
+
+    # Find or create user
+    user = db.query(User).filter(User.email == email).first()
+    if not user:
+        user = User(
+            email=email,
+            hashed_password=hash_password(os.urandom(32).hex()),
+            full_name=full_name,
+            plan=UserPlan.free,
+            is_active=True,
+            is_verified=True,
+            files_used_today=0,
+            files_used_month=0,
+            last_reset_date=datetime.now(timezone.utc),
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+    token, jti = create_access_token(user.id, user.plan.value)
+
+    # Store session
+    session = DBSession(
+        user_id=user.id,
+        jti=jti,
+        is_revoked=False,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
+    )
+    db.add(session)
+    db.commit()
+
+    response.set_cookie(
+        key="access_token",
+        value=token,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        max_age=86400,
+        path="/",
+    )
+    return {
+        "message": "Login successful",
+        "email": user.email,
+        "plan": user.plan.value,
+        "full_name": user.full_name,
+    }
 

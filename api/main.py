@@ -76,11 +76,16 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
+    allow_origins=[
+        "https://aidocli.netlify.app",
+        "http://localhost:3000",
+        "http://localhost:5500",
+        "http://127.0.0.1:5500",
+    ],
+    allow_credentials=True,    # required for cookies
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
-    expose_headers=["Content-Disposition"],  # ← critical for file downloads
+    expose_headers=["Content-Disposition"],
 )
 
 app.include_router(export_router, prefix="/api/v1")
@@ -90,43 +95,6 @@ app.include_router(documents_router, prefix="/api/v1")
 
 @app.get("/health")
 async def health() -> dict:
-    from database.connection import SessionLocal
-    from sqlalchemy import inspect
-    from auth.routes import register, RegisterRequest
-    import traceback
-    import time
-
-    schema_info = {}
-    try:
-        db = SessionLocal()
-        inspector = inspect(db.get_bind())
-        for table_name in inspector.get_table_names():
-            schema_info[table_name] = [col["name"] for col in inspector.get_columns(table_name)]
-        
-        # Test register
-        try:
-            email = f"health_{int(time.time())}@gmail.com"
-            req = RegisterRequest(
-                email=email,
-                password="password123",
-                full_name="Health Check"
-            )
-            db.rollback()
-            res = register(req, db)
-            schema_info["register_test"] = "SUCCESS"
-        except Exception as reg_err:
-            db.rollback()
-            schema_info["register_error"] = traceback.format_exc()
-            
-        db.close()
-    except Exception as e:
-        schema_info["error"] = str(e)
-
-    return {
-        "status": "ok",
-        "version": app.version,
-        "service": "doc-intelligence",
-        "schema": schema_info
-    }
+    return {"status": "ok", "version": app.version, "service": "doc-intelligence"}
 
 

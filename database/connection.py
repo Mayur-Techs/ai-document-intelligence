@@ -32,6 +32,9 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def init_db() -> None:
     """Create all tables if they don't exist. Safe to call on every startup."""
+    if os.getenv("TESTING") == "true":
+        logger.info("Skipping database initialization in testing mode.")
+        return
     logger.info("Initializing database schema…")
     Base.metadata.create_all(bind=engine)
 
