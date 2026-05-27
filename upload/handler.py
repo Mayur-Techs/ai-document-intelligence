@@ -202,8 +202,9 @@ async def save_upload(upload_file, validation: ValidationResult) -> SavedFile:
             file_path = s3_uri
         except Exception as e:
             logger.warning("S3 upload failed, falling back to local storage: %s", e)
-            # fall back to local disk
-            local_path = os.path.join(upload_dir, stored_name)
+            _upload_dir = os.getenv("UPLOAD_DIR", "data/raw")
+            os.makedirs(_upload_dir, exist_ok=True)
+            local_path = os.path.join(_upload_dir, stored_name)
             with open(local_path, "wb") as f:
                 f.write(content)
             file_path = local_path
