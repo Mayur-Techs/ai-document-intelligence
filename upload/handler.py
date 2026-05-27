@@ -197,11 +197,16 @@ async def save_upload(upload_file, validation: ValidationResult) -> SavedFile:
     stored_name = f"{uuid.uuid4().hex}{ext}"
 
     if is_s3_enabled():
-        # Save to S3
-        s3_uri = upload_file_bytes(content, stored_name, content_type="application/pdf")
-        if s3_uri:
-            return SavedFile(path=s3_uri, size_bytes=len(content))
-        logger.warning("S3 upload returned None. Falling back to local disk.")
+        try:
+            s3_uri = upload_file_bytes(content, stored_name, content_type="application/pdf")
+            file_path = s3_uri
+        except Exception as e:
+            logger.warning("S3 upload failed, falling back to local storage: %s", e)
+            # fall back to local disk
+            local_path = os.path.join(upload_dir, stored_name)
+            with open(local_path, "wb") as f:
+                f.write(content)
+            file_path = local_path
 
     # Fallback to local disk
     ensure_upload_dir()
