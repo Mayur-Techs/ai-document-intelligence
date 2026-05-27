@@ -189,7 +189,7 @@ def register(
         value=token,
         httponly=True,      # JS cannot read this
         secure=True,        # HTTPS only
-        samesite="lax",     # CSRF protection
+        samesite="none",
         max_age=86400,      # 24 hours in seconds
         path="/",
     )
@@ -258,7 +258,7 @@ def login(
         value=token,
         httponly=True,      # JS cannot read this
         secure=True,        # HTTPS only
-        samesite="lax",     # CSRF protection
+        samesite="none",
         max_age=86400,      # 24 hours in seconds
         path="/",
     )
@@ -298,7 +298,13 @@ def logout(
             session.is_revoked = True
             db.commit()
 
-    response.delete_cookie(key="access_token", path="/")
+    response.delete_cookie(
+        key="access_token",
+        path="/",
+        secure=True,
+        samesite="none",
+        httponly=True,
+    )
     return {"message": "Logged out"}
 
 
@@ -567,7 +573,7 @@ def google_login(
         value=token,
         httponly=True,
         secure=True,
-        samesite="lax",
+        samesite="none",
         max_age=86400,
         path="/",
     )
