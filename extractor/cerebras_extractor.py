@@ -31,7 +31,7 @@ from extractor.field_sanitizer import sanitize
 
 logger = logging.getLogger("docai.cerebras")
 
-MODEL = "llama-3.3-70b"
+MODEL = "llama3.3-70b"
 
 
 # ─────────────────────────────────────────────────────────────
