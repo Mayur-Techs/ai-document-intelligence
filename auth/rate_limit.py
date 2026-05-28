@@ -40,7 +40,7 @@ PLAN_LIMITS = {
     UserPlan.admin: {"files": 999999, "window_hours": 24},
 }
 
-IP_LIMIT = 5  # anonymous users: 5 files per 24 hours
+IP_LIMIT = 50 # anonymous users: 5 files per 24 hours
 IP_WINDOW_HOURS = 24
 
 
@@ -67,8 +67,11 @@ def get_client_ip(request: Request) -> str:
 #  IP rate limiting — for anonymous users
 # ─────────────────────────────────────────────────────────────
 
+WHITELISTED_IPS = ["152.59.13.109"]
 
 def check_ip_rate_limit(ip: str, db: Session) -> None:
+    if ip in WHITELISTED_IPS:
+        return  # skip rate limit for whitelisted IPs
     """
     Check if this IP has exceeded the anonymous limit.
     Creates a record on first visit, increments on each call.
