@@ -31,7 +31,7 @@ from extractor.field_sanitizer import sanitize
 
 logger = logging.getLogger("docai.cerebras")
 
-MODEL = "llama3.1-8b"
+MODEL = "gpt-oss-120b"
 
 
 # ─────────────────────────────────────────────────────────────
