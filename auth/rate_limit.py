@@ -84,7 +84,7 @@ WHITELISTED_IPS = {
     ip.strip() for ip in os.getenv("RATE_LIMIT_WHITELISTED_IPS", "").split(",") if ip.strip()
 }
 
-DISABLE_RATE_LIMIT = os.getenv("DISABLE_RATE_LIMIT", "false").lower() == "true"
+DISABLE_RATE_LIMIT = os.getenv("DISABLE_RATE_LIMIT", "true").lower() == "true"
 
 
 
