@@ -1,7 +1,7 @@
 """
 extractor/extraction_prompts.py
 ────────────────────────────────
-Domain-knowledge prompts — the AI "memory" that teaches Gemini to read
+Domain-knowledge prompts — the AI "memory" that teaches the extractor to read
 invoices like an accountant instead of like a scanner.
 """
 
@@ -160,6 +160,10 @@ total_amount rules:
 }
 
 Confidence guide:
+  CRITICAL RULE: If vendor_name, invoice_number, invoice_date, line_items,
+  and total_amount are explicitly written in the text, and no value was guessed,
+  output confidence 1.00. Do not output below 0.99 unless data is missing,
+  illegible, contradictory, or inferred.
   0.95-1.00 → All critical fields found, amounts verified, no ambiguity
   0.85-0.94 → All critical fields found, minor gaps (e.g. due_date missing)
   0.70-0.84 → Most fields found, one or two moderate gaps

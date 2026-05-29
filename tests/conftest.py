@@ -9,16 +9,17 @@ Same patterns as System 1:
 Fixtures:
   sample_pdf_bytes      — minimal valid PDF as bytes (no PyMuPDF required)
   sample_extracted_text — realistic invoice text for LLM testing
-  sample_llm_response   — realistic Claude API JSON response
+  sample_llm_response   — realistic legacy AI JSON response
   sample_document_data  — clean document dict for DB insertion
 """
 
 from __future__ import annotations
 
 import os
-os.environ["TESTING"] = "true"
 
 import pytest
+
+os.environ["TESTING"] = "true"
 
 
 @pytest.fixture
@@ -82,7 +83,7 @@ def sample_extracted_text() -> str:
 @pytest.fixture
 def sample_llm_response() -> dict:
     """
-    Realistic Claude API JSON response for invoice extraction.
+    Realistic legacy AI JSON response for invoice extraction.
     Used in tests that mock httpx.AsyncClient.
     """
     return {

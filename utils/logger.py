@@ -16,6 +16,10 @@ def setup_logging(level: str = "INFO") -> None:
 
     root = logging.getLogger()
     root.setLevel(log_level)
+    if root.handlers:
+        for handler in root.handlers:
+            handler.setLevel(log_level)
+        return
 
     console = logging.StreamHandler(sys.stdout)
     console.setFormatter(fmt)

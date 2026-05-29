@@ -24,12 +24,12 @@ from sqlalchemy.orm import Session
 from database.connection import SessionLocal
 from database.models import Document, ExtractedField
 from extractor.cerebras_extractor import extract_primary
-from extractor.field_sanitizer import merge_best
+from extractor.field_sanitizer import merge_best, verify_extraction
 from extractor.groq_extractor import extract_fallback, needs_fallback
 
 logger = logging.getLogger("docai.pipeline")
 
-CONFIDENCE_THRESHOLD = 0.95
+CONFIDENCE_THRESHOLD = 0.99
 
 
 def _session() -> Session:
@@ -223,6 +223,8 @@ async def process_document(document_id: int) -> None:
     try:
         logger.info("Primary → Cerebras llama-3.3-70b")
         primary = extract_primary(pdf_bytes, page_count, char_count)
+        if primary:
+            primary = verify_extraction(primary)
         logger.info(
             "Primary done — conf=%.2f  vendor=%s  invoice=%s  total=%s",
             (primary or {}).get("ai_confidence", 0),
@@ -236,6 +238,8 @@ async def process_document(document_id: int) -> None:
             used_fallback = True
             logger.info("Fallback → Groq llama-3.3-70b-versatile")
             fallback = extract_fallback(pdf_bytes, page_count, char_count)
+            if fallback:
+                fallback = verify_extraction(fallback)
             logger.info(
                 "Fallback done — conf=%.2f",
                 (fallback or {}).get("ai_confidence", 0),

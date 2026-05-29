@@ -42,7 +42,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from auth.core import get_current_user, get_optional_user
-from auth.rate_limit import enforce_rate_limit
+from auth.rate_limit import enforce_rate_limit, get_client_ip
 from database.connection import get_db_for_fastapi
 from database.models import Document, DocumentType, ExtractedField, Feedback, ProcessingStatus, User
 from extractor.pipeline import _resolve_path, process_document
@@ -190,9 +190,6 @@ async def batch_upload(
     db: Session = Depends(get_db_for_fastapi),
 ) -> dict[str, Any]:
     """Upload multiple PDFs at once. Each processes independently."""
-    # Enforce rate limit
-    ip = enforce_rate_limit(request, db, current_user)
-
     results = []
     for file in files:
         validation = await validate_file(file)
@@ -200,6 +197,7 @@ async def batch_upload(
             results.append({"file": file.filename, "error": validation.error})
             continue
 
+        ip = enforce_rate_limit(request, db, current_user)
         saved = await save_upload(file, validation)
         try:
             doc_type = DocumentType(document_type.lower())
@@ -554,15 +552,17 @@ def submit_feedback(
     db: Session = Depends(get_db_for_fastapi),
 ):
     """Submit thumbs up/down feedback for an extraction."""
+    ip = get_client_ip(request)
     query = db.query(Document).filter(Document.id == document_id)
     if current_user:
         query = query.filter(Document.user_id == current_user.id)
+    else:
+        query = query.filter(Document.user_id.is_(None), Document.ip_address == ip)
     doc = query.first()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
     rating_val = 1 if req.rating == "positive" else -1
-    ip = request.client.host if request.client else None
 
     feedback = Feedback(
         document_id=document_id,

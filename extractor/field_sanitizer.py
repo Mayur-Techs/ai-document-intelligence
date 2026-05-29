@@ -2,7 +2,7 @@
 extractor/field_sanitizer.py
 ─────────────────────────────
 Post-processing layer. Cleans and validates every field that comes out of
-Gemini so corrupt/garbled data never reaches the database.
+the AI extractors so corrupt/garbled data never reaches the database.
 
 No external imports — pure Python stdlib only.
 """
@@ -10,8 +10,11 @@ No external imports — pure Python stdlib only.
 from __future__ import annotations
 
 import re
+import logging
 from datetime import datetime
 from typing import Any
+
+logger = logging.getLogger("docai.sanitizer")
 
 # ─────────────────────────────────────────────────────────────
 #  Compiled patterns (built once at import time)
@@ -306,6 +309,65 @@ def sanitize(raw: dict) -> dict:
     }
 
 
+def _amount(value: Any) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def verify_extraction(result: dict) -> dict:
+    """
+    Validate invoice arithmetic after sanitization. If critical fields are present
+    and the totals reconcile exactly within paise tolerance, trust the structure.
+    """
+    if not isinstance(result, dict):
+        return result
+
+    subtotal = _amount(result.get("subtotal"))
+    tax = _amount(result.get("tax_amount")) or 0.0
+    total = _amount(result.get("total_amount"))
+    line_items = result.get("line_items") or []
+
+    critical_fields = (
+        result.get("vendor_name"),
+        result.get("invoice_number"),
+        result.get("invoice_date"),
+        total,
+    )
+    if any(v is None for v in critical_fields):
+        return result
+
+    if subtotal is None or total is None:
+        return result
+
+    totals_match = abs((subtotal + tax) - total) < 0.01
+    line_amounts = [
+        amount
+        for amount in (_amount(item.get("amount")) for item in line_items if isinstance(item, dict))
+        if amount is not None
+    ]
+
+    lines_match = False
+    if line_amounts:
+        lines_match = abs(sum(line_amounts) - subtotal) < 0.01
+
+    if totals_match and lines_match:
+        previous = _amount(result.get("ai_confidence")) or 0.0
+        result["ai_confidence"] = 1.0
+        result["confidence_reason"] = (
+            result.get("confidence_reason") or "Arithmetic verification passed."
+        )
+        logger.info(
+            "Math verification passed; confidence %.2f -> 1.00",
+            previous,
+        )
+
+    return result
+
+
 def merge_best(primary: dict, fallback: dict) -> dict:
     """
     Merge two sanitized results.
@@ -324,4 +386,4 @@ def merge_best(primary: dict, fallback: dict) -> dict:
             )
         elif merged.get(key) is None and val is not None:
             merged[key] = val
-    return merged
+    return verify_extraction(merged)

@@ -4,7 +4,7 @@ auth/rate_limit.py
 Two types of limits:
 
 1. IP RATE LIMIT (anonymous users — not logged in)
-   - 5 free extractions per IP per 24 hours
+   - 50 free extractions per IP per 24 hours
    - Tracked in ip_rate_limits table
    - After limit → return 429 with signup prompt message
 
@@ -21,6 +21,7 @@ Why 24-hour windows and not calendar day?
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException, Request, status
@@ -40,8 +41,20 @@ PLAN_LIMITS = {
     UserPlan.admin: {"files": 999999, "window_hours": 24},
 }
 
-IP_LIMIT = 50 # anonymous users: 5 files per 24 hours
+IP_LIMIT = 50  # anonymous users: 50 files per 24 hours
 IP_WINDOW_HOURS = 24
+
+
+def _ip_limit_error(minutes_left: int) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail={
+            "message": f"Free limit reached. {IP_LIMIT} extractions per 24 hours for anonymous users.",
+            "resets_in_minutes": minutes_left,
+            "action": "Create a free account for 20 extractions per day.",
+            "signup_url": "/signup",
+        },
+    )
 
 
 # ─────────────────────────────────────────────────────────────
@@ -67,11 +80,14 @@ def get_client_ip(request: Request) -> str:
 #  IP rate limiting — for anonymous users
 # ─────────────────────────────────────────────────────────────
 
-WHITELISTED_IPS = ["152.59.13.109"]
+WHITELISTED_IPS = {
+    ip.strip()
+    for ip in os.getenv("RATE_LIMIT_WHITELISTED_IPS", "").split(",")
+    if ip.strip()
+}
 
-def check_ip_rate_limit(ip: str, db: Session) -> None:
-    if ip in WHITELISTED_IPS:
-        return  # skip rate limit for whitelisted IPs
+
+def check_ip_rate_limit(ip: str, db: Session, amount: int = 1) -> None:
     """
     Check if this IP has exceeded the anonymous limit.
     Creates a record on first visit, increments on each call.
@@ -79,6 +95,14 @@ def check_ip_rate_limit(ip: str, db: Session) -> None:
 
     Raises 429 if limit exceeded.
     """
+    if ip in WHITELISTED_IPS:
+        return  # skip rate limit for whitelisted IPs
+
+    if amount < 1:
+        raise ValueError("amount must be at least 1")
+    if amount > IP_LIMIT:
+        raise _ip_limit_error(IP_WINDOW_HOURS * 60)
+
     now = datetime.now(timezone.utc)
     record = db.query(IPRateLimit).filter(IPRateLimit.ip_address == ip).first()
 
@@ -86,7 +110,7 @@ def check_ip_rate_limit(ip: str, db: Session) -> None:
         # First time this IP visits — create record
         record = IPRateLimit(
             ip_address=ip,
-            request_count=1,
+            request_count=amount,
             first_request=now,
             last_request=now,
             window_start=now,
@@ -98,31 +122,23 @@ def check_ip_rate_limit(ip: str, db: Session) -> None:
     # Check if 24-hour window has passed — if so, reset
     window_age = now - record.window_start.replace(tzinfo=timezone.utc)
     if window_age > timedelta(hours=IP_WINDOW_HOURS):
-        record.request_count = 1
+        record.request_count = amount
         record.window_start = now
         record.last_request = now
         db.commit()
         return  # reset and allow
 
     # Within window — check count
-    if record.request_count >= IP_LIMIT:
+    if record.request_count + amount > IP_LIMIT:
         reset_at = record.window_start.replace(tzinfo=timezone.utc) + timedelta(
             hours=IP_WINDOW_HOURS
         )
         minutes_left = int((reset_at - now).total_seconds() / 60)
 
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail={
-                "message": f"Free limit reached. {IP_LIMIT} extractions per 24 hours for anonymous users.",
-                "resets_in_minutes": minutes_left,
-                "action": "Create a free account for 20 extractions per day.",
-                "signup_url": "/signup",
-            },
-        )
+        raise _ip_limit_error(minutes_left)
 
     # Under limit — increment and allow
-    record.request_count += 1
+    record.request_count += amount
     record.last_request = now
     db.commit()
 
@@ -132,13 +148,16 @@ def check_ip_rate_limit(ip: str, db: Session) -> None:
 # ─────────────────────────────────────────────────────────────
 
 
-def check_user_plan_limit(user: User, db: Session) -> None:
+def check_user_plan_limit(user: User, db: Session, amount: int = 1) -> None:
     """
     Check if a logged-in user has hit their plan limit.
     Resets daily for free plan, monthly for paid plans.
 
     Raises 429 if limit exceeded with upgrade prompt.
     """
+    if amount < 1:
+        raise ValueError("amount must be at least 1")
+
     now = datetime.now(timezone.utc)
     limits = PLAN_LIMITS.get(user.plan, PLAN_LIMITS[UserPlan.free])
 
@@ -160,8 +179,9 @@ def check_user_plan_limit(user: User, db: Session) -> None:
         db.commit()
 
     current_usage = user.files_used_today if user.plan == UserPlan.free else user.files_used_month
+    current_usage = current_usage or 0
 
-    if current_usage >= limits["files"]:
+    if current_usage + amount > limits["files"]:
         upgrade_map = {
             UserPlan.free: "starter",
             UserPlan.starter: "business",
@@ -181,8 +201,8 @@ def check_user_plan_limit(user: User, db: Session) -> None:
         )
 
     # Increment usage
-    user.files_used_today = (user.files_used_today or 0) + 1
-    user.files_used_month = (user.files_used_month or 0) + 1
+    user.files_used_today = (user.files_used_today or 0) + amount
+    user.files_used_month = (user.files_used_month or 0) + amount
     db.commit()
 
 
@@ -196,6 +216,7 @@ def enforce_rate_limit(
     request: Request,
     db: Session,
     current_user: User | None = None,
+    amount: int = 1,
 ) -> str:
     """
     Single function to call on every upload.
@@ -206,8 +227,8 @@ def enforce_rate_limit(
     ip = get_client_ip(request)
 
     if current_user:
-        check_user_plan_limit(current_user, db)
+        check_user_plan_limit(current_user, db, amount=amount)
     else:
-        check_ip_rate_limit(ip, db)
+        check_ip_rate_limit(ip, db, amount=amount)
 
     return ip

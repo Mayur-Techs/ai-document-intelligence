@@ -40,7 +40,7 @@ def init_db() -> None:
 
     # Self-healing database schema: add missing columns to documents/users if tables already existed
     db = SessionLocal()
-    
+
     # 1. Apply column additions first, committing each one independently.
     columns_to_add = [
         # documents table

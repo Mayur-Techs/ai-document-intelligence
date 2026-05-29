@@ -16,11 +16,14 @@ How to register this in api/main.py:
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone, timedelta
+import smtplib
+from datetime import datetime, timedelta, timezone
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 
-from fastapi import APIRouter, Depends, HTTPException, status, Response
-from google.oauth2 import id_token
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from google.auth.transport import requests as google_requests
+from google.oauth2 import id_token
 from pydantic import BaseModel, EmailStr, field_validator
 from sqlalchemy.orm import Session
 
@@ -37,6 +40,23 @@ from database.models import User, UserPlan
 
 router = APIRouter()
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+COOKIE_MAX_AGE_SECONDS = 86400
+
+
+def _session_expires_at() -> datetime:
+    return datetime.now(timezone.utc) + timedelta(seconds=COOKIE_MAX_AGE_SECONDS)
+
+
+def _set_auth_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        key="access_token",
+        value=token,
+        httponly=True,
+        secure=True,
+        samesite="none",
+        max_age=COOKIE_MAX_AGE_SECONDS,
+        path="/",
+    )
 
 
 # ─────────────────────────────────────────────────────────────
@@ -63,15 +83,6 @@ class RegisterRequest(BaseModel):
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
-
-
-class AuthResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-    user_id: int
-    email: str
-    plan: str
-    message: str
 
 
 class UserProfile(BaseModel):
@@ -146,7 +157,7 @@ def register(
         user_id=user.id,
         jti=jti,
         is_revoked=False,
-        expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
+        expires_at=_session_expires_at(),
     )
     db.add(session)
     db.commit()
@@ -161,9 +172,6 @@ def register(
 
     if smtp_host and smtp_user and smtp_pass:
         verify_link = f"{frontend_url}/verify-email.html?token={verification_token}&email={body.email}"
-        from email.mime.multipart import MIMEMultipart
-        from email.mime.text import MIMEText
-        import smtplib
         msg = MIMEMultipart()
         msg["From"] = smtp_user
         msg["To"] = body.email
@@ -184,15 +192,7 @@ def register(
         except Exception:
             pass  # Don't block registration if email fails
 
-    response.set_cookie(
-        key="access_token",
-        value=token,
-        httponly=True,      # JS cannot read this
-        secure=True,        # HTTPS only
-        samesite="none",
-        max_age=86400,      # 24 hours in seconds
-        path="/",
-    )
+    _set_auth_cookie(response, token)
 
     return {
         "message": "Welcome! Your free account gives you 20 extractions per day.",
@@ -241,7 +241,7 @@ def login(
         user_id=user.id,
         jti=jti,
         is_revoked=False,
-        expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
+        expires_at=_session_expires_at(),
     )
     db.add(session)
     db.commit()
@@ -253,15 +253,7 @@ def login(
         "enterprise": "Unlimited",
     }
 
-    response.set_cookie(
-        key="access_token",
-        value=token,
-        httponly=True,      # JS cannot read this
-        secure=True,        # HTTPS only
-        samesite="none",
-        max_age=86400,      # 24 hours in seconds
-        path="/",
-    )
+    _set_auth_cookie(response, token)
 
     return {
         "message": f"Welcome back! Plan: {plan_limits.get(user.plan.value, user.plan.value)}",
@@ -289,7 +281,7 @@ def logout(
             db.query(DBSession)
             .filter(
                 DBSession.user_id == current_user.id,
-                DBSession.is_revoked == False,
+                DBSession.is_revoked.is_(False),
             )
             .order_by(DBSession.created_at.desc())
             .first()
@@ -358,12 +350,7 @@ def forgot_password(body: ForgotPasswordRequest, db: Session = Depends(get_db_fo
     If SMTP is configured, the user receives a reset link valid for 1 hour.
     """
     import hashlib
-    import os
     import secrets
-    import smtplib
-    from datetime import timedelta
-    from email.mime.multipart import MIMEMultipart
-    from email.mime.text import MIMEText
 
     # Always respond 200 to prevent account enumeration
     user = db.query(User).filter(User.email == body.email.lower()).first()
@@ -532,8 +519,8 @@ def google_login(
             google_requests.Request(),
             GOOGLE_CLIENT_ID,
         )
-    except ValueError:
-        raise HTTPException(status_code=401, detail="Invalid Google token")
+    except ValueError as err:
+        raise HTTPException(status_code=401, detail="Invalid Google token") from err
 
     email = id_info["email"]
     full_name = id_info.get("name", "")
@@ -555,6 +542,11 @@ def google_login(
         db.add(user)
         db.commit()
         db.refresh(user)
+    elif not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account is disabled. Contact support.",
+        )
 
     token, jti = create_access_token(user.id, user.plan.value)
 
@@ -563,20 +555,12 @@ def google_login(
         user_id=user.id,
         jti=jti,
         is_revoked=False,
-        expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
+        expires_at=_session_expires_at(),
     )
     db.add(session)
     db.commit()
 
-    response.set_cookie(
-        key="access_token",
-        value=token,
-        httponly=True,
-        secure=True,
-        samesite="none",
-        max_age=86400,
-        path="/",
-    )
+    _set_auth_cookie(response, token)
     return {
         "message": "Login successful",
         "email": user.email,

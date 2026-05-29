@@ -1,7 +1,7 @@
 """
 tests/test_parser.py — Tests for parser/extractor.py.
 
-Pure function tests — no DB, no API, no Claude calls.
+Pure function tests — no DB, no API, no AI provider calls.
 Run: pytest tests/test_parser.py -v
 """
 
@@ -47,7 +47,7 @@ def _make_fitz_mock(text: str, page_count: int = 1):
 
 
 class TestTruncateText:
-    """Truncation prevents blowing Claude's context window."""
+    """Truncation prevents blowing an AI provider's context window."""
 
     def test_short_text_unchanged(self):
         assert truncate_text("Hello world", max_chars=100) == "Hello world"

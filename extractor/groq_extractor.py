@@ -14,7 +14,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import time
 
 from groq import Groq
@@ -26,7 +25,7 @@ from extractor.field_sanitizer import sanitize
 logger = logging.getLogger("docai.groq")
 
 PRIMARY_MODEL = "llama-3.3-70b-versatile"
-FALLBACK_MODEL = "llama-3.1-8b-instant"  # faster backup if 70b is rate-limited
+FALLBACK_MODEL = "llama-3.1-8b-instant"  # retained for config compatibility
 
 
 def _get_client() -> Groq:
@@ -97,23 +96,13 @@ def _call_groq(
                 logger.error("[groq] Invalid API key — get free key at console.groq.com")
                 return None
 
-            # Rate limit — wait then retry
-            if "429" in err or "rate_limit" in err.lower():
-                wait = 30
-                m = re.search(r"try again in ([\d.]+)s", err)
-                if m:
-                    wait = int(float(m.group(1))) + 2
-                if attempt <= max_retries:
-                    logger.warning("[groq/%s] Rate limited — waiting %ds", model, wait)
-                    time.sleep(wait)
-                else:
-                    # If 70b rate-limited on all retries, try the 8b model once
-                    if model == PRIMARY_MODEL:
-                        logger.info("[groq] Dropping to %s after rate limit", FALLBACK_MODEL)
-                        return _call_groq(
-                            text, FALLBACK_MODEL, page_count, char_count, max_retries=1
-                        )
-                    return None
+            # Rate limit: bypass immediately so the pipeline does not freeze.
+            if "429" in err or "rate" in err.lower():
+                logger.error(
+                    "[groq/%s] Rate limits hit. Bypassing fallback to avoid pipeline freeze.",
+                    model,
+                )
+                return None
 
             else:
                 logger.error("[groq/%s] Error attempt %d: %s", model, attempt, e)

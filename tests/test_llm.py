@@ -1,17 +1,9 @@
 """
-tests/test_llm.py — Tests for processor/llm.py (Claude Sonnet extraction).
+Legacy tests for processor/llm.py prompt and response parsing.
 
-All Claude API calls are mocked — we test OUR prompt logic and response parsing,
-not Anthropic's API. Same principle as System 1's test_qualifier.py.
-
-Key things we're validating:
-  1. Prompt contains the document text (not just the template)
-  2. Valid JSON response is parsed into ExtractionOutput correctly
-  3. Malformed JSON triggers the fallback/repair logic (not a crash)
-  4. Missing API key returns error dict (not exception)
-  5. Field values are correctly typed (total_amount as float, not string)
-
-Run: pytest tests/test_llm.py -v
+The active production pipeline is extractor/pipeline.py with Cerebras and Groq.
+These tests remain because processor/llm.py still contains useful prompt-building
+and response-parsing behavior from an older Gemini-based implementation.
 """
 
 from __future__ import annotations
@@ -46,11 +38,9 @@ class TestBuildPrompt:
         assert "confidence" in prompt.lower()
 
     def test_prompt_truncates_long_text(self):
-        """build_prompt must cap text length — unbounded prompts blow token limits."""
+        """build_prompt must cap text length so unbounded prompts do not blow token limits."""
         long_text = "Invoice data: " + "A" * 100_000
         prompt = build_prompt(long_text, document_type="invoice")
-        # The prompt template adds ~800 chars. Text is capped at MAX_TEXT_CHARS (8000).
-        # Total prompt should be well under 16000 chars.
         assert len(prompt) < 16_000
 
 
@@ -62,7 +52,7 @@ class TestParseLlmResponse:
         assert output.data["vendor_name"] == "Sharma Freight Solutions Pvt Ltd"
         assert output.data["invoice_number"] == "INV-2026-04892"
         assert output.data["total_amount"] == 197355.00
-        assert output.confidence == pytest.approx(0.94, abs=0.01)  # 94/100
+        assert output.confidence == pytest.approx(0.94, abs=0.01)
 
     def test_json_with_markdown_fences_parsed(self):
         raw = '```json\n{"vendor_name": "Test Corp", "total_amount": 1000, "confidence_score": 80}\n```'
@@ -83,17 +73,15 @@ class TestParseLlmResponse:
         assert output.error is not None
 
     def test_partial_json_still_parsed(self):
-        """Partial JSON with some valid fields should still return what it can."""
-        raw = '{"vendor_name": "Partial Corp", "total_amount": 750'  # missing closing brace
+        raw = '{"vendor_name": "Partial Corp", "total_amount": 750'
         output = parse_llm_response(raw)
-        # Either succeeds with partial data or fails gracefully — no exception
         assert isinstance(output, ExtractionOutput)
 
 
 class TestExtractFields:
-    @pytest.mark.skip(reason="Anthropic removed, replaced with Cerebras+Groq")
+    @pytest.mark.skip(reason="Legacy provider integration replaced with Cerebras+Groq")
     async def test_successful_extraction(self, sample_extracted_text, sample_llm_response):
-        """Mock Claude API returns valid JSON → ExtractionOutput with all fields."""
+        """Mock legacy AI API returns valid JSON and maps it into ExtractionOutput."""
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = sample_llm_response
@@ -105,7 +93,7 @@ class TestExtractFields:
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
         with patch("processor.llm.httpx.AsyncClient", return_value=mock_client), patch(
-            "processor.llm.ANTHROPIC_API_KEY", "sk-ant-test-key"
+            "processor.llm.GEMINI_API_KEY", "test-key"
         ):
             output = await extract_fields(sample_extracted_text, document_type="invoice")
 
@@ -114,18 +102,16 @@ class TestExtractFields:
         assert output.data["total_amount"] == 197355.00
         assert output.confidence == pytest.approx(0.94, abs=0.01)
 
-    @pytest.mark.skip(reason="Anthropic removed, replaced with Cerebras+Groq")
+    @pytest.mark.skip(reason="Legacy provider integration replaced with Cerebras+Groq")
     async def test_missing_api_key_returns_error(self, sample_extracted_text):
-        """No API key → error output (not exception)."""
-        with patch("processor.llm.ANTHROPIC_API_KEY", ""):
+        with patch("processor.llm.GEMINI_API_KEY", ""):
             output = await extract_fields(sample_extracted_text, document_type="invoice")
 
         assert output.success is False
         assert "api_key" in output.error.lower() or "not set" in output.error.lower()
 
-    @pytest.mark.skip(reason="Anthropic removed, replaced with Cerebras+Groq")
+    @pytest.mark.skip(reason="Legacy provider integration replaced with Cerebras+Groq")
     async def test_http_error_returns_error(self, sample_extracted_text):
-        """Claude API returns 429 → error output (not exception)."""
         import httpx
 
         mock_client = AsyncMock()
@@ -140,16 +126,15 @@ class TestExtractFields:
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
         with patch("processor.llm.httpx.AsyncClient", return_value=mock_client), patch(
-            "processor.llm.ANTHROPIC_API_KEY", "sk-ant-test"
+            "processor.llm.GEMINI_API_KEY", "test-key"
         ):
             output = await extract_fields(sample_extracted_text, document_type="invoice")
 
         assert output.success is False
         assert output.error is not None
 
-    @pytest.mark.skip(reason="Anthropic removed, replaced with Cerebras+Groq")
+    @pytest.mark.skip(reason="Legacy provider integration replaced with Cerebras+Groq")
     async def test_malformed_response_returns_error(self, sample_extracted_text):
-        """Claude returns non-JSON text → error output (not exception)."""
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = {
@@ -163,9 +148,8 @@ class TestExtractFields:
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
         with patch("processor.llm.httpx.AsyncClient", return_value=mock_client), patch(
-            "processor.llm.ANTHROPIC_API_KEY", "sk-ant-test"
+            "processor.llm.GEMINI_API_KEY", "test-key"
         ):
             output = await extract_fields(sample_extracted_text, document_type="invoice")
 
         assert isinstance(output, ExtractionOutput)
-        # either parsed something or returned failure — never raised

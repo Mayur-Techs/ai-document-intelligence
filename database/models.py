@@ -68,7 +68,7 @@ class DocumentType(str, enum.Enum):
 
 
 class UserPlan(str, enum.Enum):
-    free = "free"  # 5 files per day (IP-tracked before login)
+    free = "free"  # 20 files per day for registered users
     starter = "starter"  # 100 files per month
     business = "business"  # 500 files per month
     enterprise = "enterprise"  # unlimited
@@ -142,7 +142,7 @@ class Session(Base):
 # ─────────────────────────────────────────────────────────────
 #  TABLE: ip_rate_limits
 #  Tracks anonymous users (not logged in) by IP address.
-#  Rule: 5 free extractions per IP per 24 hours.
+#  Rule: 50 free extractions per IP per 24 hours.
 #  After that — show signup prompt.
 # ─────────────────────────────────────────────────────────────
 

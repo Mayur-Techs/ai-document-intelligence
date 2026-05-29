@@ -4,7 +4,7 @@ main.py — AI Document Intelligence CLI.
 Usage:
     python main.py --file invoice.pdf
     python main.py --file invoice.pdf --type contract
-    python main.py --file invoice.pdf --dry-run       # extract text only, no Claude
+    python main.py --file invoice.pdf --dry-run       # extract text only, no AI or DB
     python main.py --dir ./invoices/                  # process entire directory
 
 WHY a CLI separate from the API?
@@ -51,7 +51,7 @@ async def process_file(file_path: str, doc_type: str, dry_run: bool) -> None:
     logger.info("Processing: %s", path.name)
 
     if dry_run:
-        # Step 1 only — extract and print text, no DB, no Claude
+        # Step 1 only: extract and print text, no DB, no AI provider call.
         result = extract_text(str(path))
         if result.success:
             logger.info(
@@ -66,7 +66,7 @@ async def process_file(file_path: str, doc_type: str, dry_run: bool) -> None:
             logger.error("Extraction failed: %s", result.error)
         return
 
-    # Full pipeline: save to DB → call process_document (extract + Claude + store)
+    # Full pipeline: save to DB, then process_document extracts, calls AI, and stores results.
     with get_db() as db:
         doc = Document(
             file_name=path.name,
@@ -117,7 +117,7 @@ def parse_args() -> argparse.Namespace:
         "--type", default="invoice", choices=["invoice", "contract", "receipt", "report", "other"]
     )
     parser.add_argument(
-        "--dry-run", action="store_true", help="Extract text only — no Claude API, no DB write"
+        "--dry-run", action="store_true", help="Extract text only; no AI provider call or DB write"
     )
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING"])
     return parser.parse_args()
@@ -128,8 +128,8 @@ if __name__ == "__main__":
     setup_logging(level=args.log_level)
 
     if not args.dry_run:
-        if not os.getenv("GEMINI_API_KEY"):
-            logger.error("GEMINI_API_KEY not set. Get free key at aistudio.google.com")
+        if not os.getenv("CEREBRAS_API_KEY") and not os.getenv("GROQ_API_KEY"):
+            logger.error("Set CEREBRAS_API_KEY or GROQ_API_KEY before running full extraction")
             raise SystemExit(1)
         init_db()
 

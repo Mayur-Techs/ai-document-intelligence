@@ -140,6 +140,45 @@ class TestUpload:
             )
         assert r.status_code == 422
 
+    def test_batch_upload_enforces_rate_limit_per_valid_file(self, client):
+        with patch("api.routes.documents.validate_file") as mock_val, patch(
+            "api.routes.documents.save_upload"
+        ) as mock_save, patch("api.routes.documents.process_document"), patch(
+            "api.routes.documents.enforce_rate_limit"
+        ) as mock_limit:
+            mock_val.return_value = type(
+                "V",
+                (),
+                {
+                    "valid": True,
+                    "error": None,
+                    "original_name": "invoice.pdf",
+                    "mime_type": "application/pdf",
+                    "size_bytes": 1024,
+                },
+            )()
+            mock_save.return_value = type(
+                "S",
+                (),
+                {
+                    "path": "/data/raw/abc.pdf",
+                    "size_bytes": 1024,
+                },
+            )()
+            mock_limit.return_value = "testclient"
+
+            r = client.post(
+                "/api/v1/documents/batch/upload",
+                files=[
+                    ("files", ("a.pdf", io.BytesIO(b"%PDF-1.4 a"), "application/pdf")),
+                    ("files", ("b.pdf", io.BytesIO(b"%PDF-1.4 b"), "application/pdf")),
+                ],
+            )
+
+        assert r.status_code == 202
+        assert r.json()["queued"] == 2
+        assert mock_limit.call_count == 2
+
 
 # ── Status polling ────────────────────────────────────────────────────────────
 class TestDocumentStatus:
@@ -271,6 +310,57 @@ class TestDelete:
 
 
 # ── Feedback ──────────────────────────────────────────────────────────────────
+class TestDocumentOwnership:
+    def test_list_documents_excludes_other_users_documents(self, client):
+        db = TestSessionLocal()
+        db.add(Document(file_name="mine.pdf", file_path="/mine.pdf", file_size_bytes=100, user_id=1))
+        db.add(Document(file_name="theirs.pdf", file_path="/theirs.pdf", file_size_bytes=100, user_id=2))
+        db.commit()
+        db.close()
+
+        r = client.get("/api/v1/documents/")
+
+        assert r.status_code == 200
+        names = {doc["file_name"] for doc in r.json()}
+        assert names == {"mine.pdf"}
+
+    def test_get_document_returns_404_for_other_users_document(self, client):
+        db = TestSessionLocal()
+        doc = Document(file_name="private.pdf", file_path="/private.pdf", file_size_bytes=100, user_id=2)
+        db.add(doc)
+        db.commit()
+        doc_id = doc.id
+        db.close()
+
+        r = client.get(f"/api/v1/documents/{doc_id}")
+
+        assert r.status_code == 404
+
+    def test_delete_document_returns_404_for_other_users_document(self, client):
+        db = TestSessionLocal()
+        doc = Document(file_name="private.pdf", file_path="/private.pdf", file_size_bytes=100, user_id=2)
+        db.add(doc)
+        db.commit()
+        doc_id = doc.id
+        db.close()
+
+        r = client.delete(f"/api/v1/documents/{doc_id}")
+
+        assert r.status_code == 404
+
+    def test_export_csv_returns_404_for_other_users_document(self, client):
+        db = TestSessionLocal()
+        doc = Document(file_name="private.pdf", file_path="/private.pdf", file_size_bytes=100, user_id=2)
+        db.add(doc)
+        db.commit()
+        doc_id = doc.id
+        db.close()
+
+        r = client.get(f"/api/v1/documents/{doc_id}/export/csv")
+
+        assert r.status_code == 404
+
+
 class TestFeedback:
     def test_submit_feedback_success(self, client):
         db = TestSessionLocal()
@@ -304,3 +394,44 @@ class TestFeedback:
         )
         assert r.status_code == 404
 
+    def test_anonymous_feedback_cannot_target_registered_user_document(self, client):
+        from api.main import app
+
+        app.dependency_overrides[get_optional_user] = lambda: None
+        db = TestSessionLocal()
+        doc = Document(file_name="owned.pdf", file_path="/owned.pdf", file_size_bytes=500, user_id=1)
+        db.add(doc)
+        db.commit()
+        doc_id = doc.id
+        db.close()
+
+        r = client.post(
+            f"/api/v1/documents/{doc_id}/feedback",
+            json={"rating": "positive"},
+        )
+
+        assert r.status_code == 404
+
+    def test_anonymous_feedback_can_target_same_ip_anonymous_document(self, client):
+        from api.main import app
+
+        app.dependency_overrides[get_optional_user] = lambda: None
+        db = TestSessionLocal()
+        doc = Document(
+            file_name="anonymous.pdf",
+            file_path="/anonymous.pdf",
+            file_size_bytes=500,
+            user_id=None,
+            ip_address="testclient",
+        )
+        db.add(doc)
+        db.commit()
+        doc_id = doc.id
+        db.close()
+
+        r = client.post(
+            f"/api/v1/documents/{doc_id}/feedback",
+            json={"rating": "positive"},
+        )
+
+        assert r.status_code == 200

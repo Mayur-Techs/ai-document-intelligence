@@ -11,6 +11,7 @@ Why write tests?
 Run locally: pytest tests/ -v
 """
 
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pytest
@@ -19,8 +20,10 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from auth.core import create_access_token, hash_password
 from database.connection import get_db_for_fastapi
-from database.models import Base
+from database.models import Base, User, UserPlan
+from database.models import Session as DBSession
 
 TEST_DB_URL = "sqlite:///:memory:"
 test_engine = create_engine(
@@ -73,6 +76,10 @@ def test_register_success(client):
     assert response.status_code in (201, 409)
     if response.status_code == 201:
         assert "access_token" in response.cookies
+        set_cookie = response.headers["set-cookie"].lower()
+        assert "httponly" in set_cookie
+        assert "secure" in set_cookie
+        assert "samesite=none" in set_cookie
 
 
 def test_register_weak_password(client):
@@ -122,6 +129,33 @@ def test_protected_route_no_token(client):
     assert response.status_code == 401
 
 
+def test_expired_db_session_rejected(client):
+    db = TestSessionLocal()
+    user = User(
+        email="expired_session@example.com",
+        hashed_password=hash_password("testpassword123"),
+        plan=UserPlan.free,
+        is_active=True,
+    )
+    db.add(user)
+    db.flush()
+    token, jti = create_access_token(user.id, user.plan.value)
+    db.add(
+        DBSession(
+            user_id=user.id,
+            jti=jti,
+            is_revoked=False,
+            expires_at=datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=1),
+        )
+    )
+    db.commit()
+    db.close()
+
+    response = client.get("/auth/me", cookies={"access_token": token})
+
+    assert response.status_code == 401
+
+
 def test_login_success_and_profile_flow(client):
     email = "flow_user@example.com"
     password = "flowpassword123"
@@ -151,6 +185,10 @@ def test_login_success_and_profile_flow(client):
     )
     assert login_res.status_code == 200
     assert "access_token" in login_res.cookies
+    set_cookie = login_res.headers["set-cookie"].lower()
+    assert "httponly" in set_cookie
+    assert "secure" in set_cookie
+    assert "samesite=none" in set_cookie
 
     # 3. Access profile (Client automatically retains cookies)
     profile_res = client.get("/auth/me")
@@ -164,6 +202,28 @@ def test_login_success_and_profile_flow(client):
     # 5. Access profile after logout should fail
     profile_after_logout = client.get("/auth/me")
     assert profile_after_logout.status_code == 401
+
+
+def test_google_login_rejects_disabled_existing_user(client):
+    db = TestSessionLocal()
+    db.add(
+        User(
+            email="disabled_google@example.com",
+            hashed_password=hash_password("testpassword123"),
+            plan=UserPlan.free,
+            is_active=False,
+        )
+    )
+    db.commit()
+    db.close()
+
+    with patch(
+        "auth.routes.id_token.verify_oauth2_token",
+        return_value={"email": "disabled_google@example.com", "name": "Disabled User"},
+    ):
+        response = client.post("/auth/google", json={"credential": "fake-google-token"})
+
+    assert response.status_code == 403
 
 
 def test_health_endpoint(client):

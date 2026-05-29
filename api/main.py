@@ -4,7 +4,7 @@ api/main.py — System 2: AI Document Intelligence API.
 Follows identical patterns to System 1 (lead-gen-automation):
   - lifespan context manager (not deprecated @on_event)
   - structured logging setup at module load
-  - CORSMiddleware from env var
+  - explicit CORSMiddleware origins for credentialed browser requests
   - versioned routes at /api/v1/
   - GET /health for Render + Docker healthchecks
 """
@@ -48,23 +48,24 @@ async def lifespan(app: FastAPI):  # type: ignore[type-arg]
             "AWS_STORAGE_BUCKET_NAME not set — PDF files will be stored on Render's ephemeral "
             "disk and DELETED on every redeploy. Set S3/R2 credentials to enable persistent storage."
         )
-    if os.getenv("JWT_SECRET", "change-me-in-production") == "change-me-in-production":
+    if (
+        os.getenv("JWT_SECRET_KEY", "change-this-in-production-use-a-long-random-string")
+        == "change-this-in-production-use-a-long-random-string"
+    ):
         logger.warning(
-            "JWT_SECRET is using the default insecure value! "
-            "Set a strong random JWT_SECRET in Render environment variables immediately."
+            "JWT_SECRET_KEY is using the default insecure value! "
+            "Set a strong random JWT_SECRET_KEY in Render environment variables immediately."
         )
 
     yield
     logger.info("Shutting down AI Document Intelligence API.")
-
-
 
 app = FastAPI(
     title="AI Document Intelligence API",
     debug=False,
     description=(
         "Upload PDF documents — invoices, contracts, receipts. "
-        "Claude Sonnet extracts structured fields automatically. "
+        "Cerebras and Groq extract structured fields automatically. "
         "Query, export, and verify extracted data via REST API."
     ),
     version="0.1.0",
@@ -97,5 +98,3 @@ app.include_router(documents_router, prefix="/api/v1")
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok", "version": app.version, "service": "doc-intelligence"}
-
-

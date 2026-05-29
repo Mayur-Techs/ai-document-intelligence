@@ -19,7 +19,7 @@ This file does three things:
 
 3. JWT VERIFICATION
    Every protected request calls get_current_user().
-   It reads the token from the Authorization header,
+   It reads the token from the HttpOnly access_token cookie,
    verifies the signature, checks expiry, checks not revoked.
    If all good — returns the User object.
    If anything fails — raises 401 Unauthorized.
@@ -31,9 +31,9 @@ import os
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import Depends, Cookie, HTTPException, status
-from jose import JWTError, jwt
 import bcrypt
+from fastapi import Cookie, Depends, HTTPException, status
+from jose import JWTError, jwt
 from sqlalchemy.orm import Session
 
 from database.connection import get_db_for_fastapi
@@ -52,7 +52,7 @@ ACCESS_TOKEN_EXPIRE_HOURS = 24  # token valid for 24 hours
 
 # ─────────────────────────────────────────────────────────────
 #  Password hashing
-#  CryptContext handles bcrypt automatically
+#  Direct bcrypt is used instead of passlib for Python 3.12 compatibility.
 # ─────────────────────────────────────────────────────────────
 
 def hash_password(plain: str) -> str:
@@ -144,7 +144,8 @@ def get_current_user(
         db.query(DBSession)
         .filter(
             DBSession.jti == jti,
-            DBSession.is_revoked == False,
+            DBSession.is_revoked.is_(False),
+            DBSession.expires_at > datetime.now(timezone.utc).replace(tzinfo=None),
         )
         .first()
     )
@@ -157,7 +158,7 @@ def get_current_user(
         db.query(User)
         .filter(
             User.id == int(user_id),
-            User.is_active == True,
+            User.is_active.is_(True),
         )
         .first()
     )

@@ -1,23 +1,16 @@
 name: DocIntel CI/CD
 
-# When does this run?
-# Every push to main and every pull request targeting main
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
 
 jobs:
-
-  # ── Job 1: Test & Lint ─────────────────────────────────────
-  # This runs on every push and PR
-  # If it fails, deployment does NOT happen
   test:
     name: Test & Lint
     runs-on: ubuntu-latest
 
-    # Spin up a real PostgreSQL for tests
     services:
       postgres:
         image: postgres:15
@@ -34,44 +27,30 @@ jobs:
           - 5432:5432
 
     steps:
-      # Step 1 — Get the code
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Step 2 — Set up Python 3.12 (matches your production version)
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip   # cache pip packages between runs — faster CI
+          cache: pip
 
-      # Step 3 — Install dependencies
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # Step 4 — Lint with ruff (faster than flake8)
-      # Catches syntax errors, unused imports, obvious bugs
       - name: Lint with ruff
-        run: |
-          pip install ruff
-          ruff check . --select E,F,W --ignore E501
-        continue-on-error: true   # lint failures warn but don't block deploy
+        run: ruff check .
 
-      # Step 5 — Run tests
-      # We use a test DB so real data is never touched
       - name: Run tests
         env:
           DATABASE_URL: postgresql://docai:docai@localhost:5432/docai_test
           JWT_SECRET_KEY: test-secret-key-not-for-production
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           TESTING: "true"
-        run: |
-          pip install pytest pytest-asyncio httpx
-          pytest tests/ -v --tb=short 2>/dev/null || echo "No tests found — skipping"
+        run: pytest tests/ -v --tb=short
 
-      # Step 6 — Check imports resolve (catches missing packages)
       - name: Verify imports
         env:
           DATABASE_URL: postgresql://docai:docai@localhost:5432/docai_test
@@ -82,12 +61,10 @@ jobs:
           python -c "from extractor.pipeline import process_document"
           echo "All imports OK"
 
-  # ── Job 2: Deploy to Render ───────────────────────────────
-  # Only runs when pushing to main AND tests pass
   deploy:
     name: Deploy to Render
     runs-on: ubuntu-latest
-    needs: test   # waits for test job to pass first
+    needs: test
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
 
     steps:
@@ -102,8 +79,7 @@ jobs:
       - name: Health check
         run: |
           curl --fail --retry 5 --retry-delay 15 \
-            https://doc-intelligence-api-tubh.onrender.com/health \
-            || echo "Health check failed — check Render logs"
+            https://doc-intelligence-api-tubh.onrender.com/health
 
       - name: Notify on success
         run: echo "Deployed successfully to Render"

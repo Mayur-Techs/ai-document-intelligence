@@ -1,171 +1,160 @@
-# AI Document Intelligence System
+# AI Document Intelligence API
 
-> **30-Day Financial Freedom Plan — System 2**
-> Upload any PDF invoice, contract, or receipt. Claude Sonnet extracts structured fields automatically. Query, export, and verify via REST API.
+FastAPI backend for DocIntel AI. It accepts PDF invoices, stores the original
+file, extracts structured invoice data with LLMs, verifies the extraction with
+backend rules, saves the result in PostgreSQL, and exposes REST endpoints for
+querying, export, feedback, and reprocessing.
 
-[![CI](https://github.com/YOUR_USERNAME/ai-document-intelligence/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR_USERNAME/ai-document-intelligence/actions/workflows/ci.yml)
-[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://python.org)
-[![Tests](https://img.shields.io/badge/tests-38%20passing-brightgreen.svg)]()
+## Production Pipeline
 
----
-
-## What This Does
-
-Drop a PDF → get structured JSON. That's it.
-
-```
-POST /api/v1/documents/upload  →  202 Accepted (job_id returned)
-GET  /api/v1/documents/{id}    →  {"vendor": "Sharma Freight", "total": 197355, "confidence": 0.94, ...}
-```
-
-**Pipeline:**
-```
-PDF Upload → pdfplumber extract text → Claude Sonnet prompt → Pydantic validate
-→ PostgreSQL store → FastAPI serve → n8n notify Slack
+```text
+PDF upload
+-> FastAPI validation
+-> S3 object storage, with local disk fallback
+-> background extraction job
+-> pdfplumber text extraction
+-> Cerebras primary AI extraction
+-> sanitizer and field cleanup
+-> arithmetic verification of subtotal, tax, total, and line items
+-> strict 0.99 confidence gate
+-> Groq fallback only when verification/confidence/critical fields require it
+-> PostgreSQL documents and extracted_fields tables
+-> CSV, Excel, email, and stats endpoints
 ```
 
-**n8n Google Drive workflow:** Drop PDF in folder → auto-extracted → Slack notification with vendor, invoice number, total amount, AI confidence score.
+## Extraction Reliability
 
----
+- Cerebras is the primary extraction provider.
+- Groq is the fallback provider when the primary result is missing critical data
+  or remains below the strict `0.99` confidence threshold.
+- The backend does not blindly trust the LLM confidence number. After sanitizing
+  the model output, it verifies invoice arithmetic:
+  - `subtotal + tax_amount == total_amount`
+  - sum of clean line-item amounts matches `subtotal`
+- If the arithmetic and critical fields pass, the backend promotes
+  `ai_confidence` to `1.0`.
+- Groq rate limits are fail-fast. If Groq returns `429` or another rate-limit
+  error, the fallback is skipped immediately so the processing pipeline does not
+  hang.
 
-## Quick Start
+## Important Production Rules
 
-```bash
-git clone https://github.com/YOUR_USERNAME/ai-document-intelligence.git
-cd ai-document-intelligence
-make setup              # copy .env.example → .env + install deps
-nano .env               # add ANTHROPIC_API_KEY
-make up                 # PostgreSQL + API + n8n on ports 8001/5433/5679
-make migrate            # apply DB migrations
+- Use `JWT_SECRET_KEY`, not `JWT_SECRET`.
+- Auth uses an HttpOnly `access_token` cookie with `Secure` and `SameSite=None`.
+- CORS must list explicit frontend origins when `allow_credentials=True`.
+- S3 success must store an `s3://bucket/key` URI in `documents.file_path`.
+- Local upload storage is only a fallback; Render free disk is ephemeral.
+- Registered users must only access documents where `documents.user_id` matches their user id.
+- Anonymous document actions must be scoped by the original IP address.
+- Keep `CEREBRAS_API_KEY` configured. Without it, primary extraction cannot run.
+- Keep `GROQ_API_KEY` configured for fallback, but the app will not block forever
+  if Groq is rate-limited.
+
+## Required Environment Variables
+
+```env
+DATABASE_URL=postgresql://...
+JWT_SECRET_KEY=<64-char random secret>
+CEREBRAS_API_KEY=<cloud.cerebras.ai key>
+GROQ_API_KEY=<console.groq.com key>
+GOOGLE_CLIENT_ID=<google oauth client id>
+FRONTEND_URL=https://aidocli.netlify.app
+AWS_ACCESS_KEY_ID=<iam access key>
+AWS_SECRET_ACCESS_KEY=<iam secret>
+AWS_STORAGE_BUCKET_NAME=doc-intel-uploads
+AWS_S3_REGION_NAME=ap-south-1
+UPLOAD_DIR=data/raw
+LOG_LEVEL=INFO
 ```
 
-Test it immediately:
-```bash
-make upload-test FILE=your_invoice.pdf
-make stats
+Optional email features:
+
+```env
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=<sender email>
+SMTP_PASSWORD=<app password>
 ```
 
----
+## Local Development
 
-## API Reference
+Use Python 3.12, matching the Dockerfile and production runtime.
 
-Base URL: `http://localhost:8001` | Docs: `http://localhost:8001/docs`
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/documents/upload` | Upload PDF, returns job_id (202) |
-| `POST` | `/documents/batch/upload` | Upload multiple PDFs |
-| `GET` | `/documents/{id}/status` | Poll processing status |
-| `GET` | `/documents/{id}` | Full result + all fields |
-| `GET` | `/documents/{id}/fields` | All extracted fields |
-| `GET` | `/documents/` | List all, filter by status/type |
-| `GET` | `/documents/stats/summary` | Aggregate stats |
-| `GET` | `/documents/export` | CSV export |
-| `GET` | `/documents/search?q=sharma` | Search extracted values |
-| `POST` | `/documents/{id}/reprocess` | Re-run extraction |
-| `PATCH` | `/documents/{id}/fields/{fid}/verify` | Mark field human-verified |
-| `DELETE` | `/documents/{id}` | Delete document |
-| `GET` | `/health` | Health check |
-
-All routes at `/api/v1/`.
-
----
-
-## Document Types Supported
-
-| Type | Key Fields Extracted |
-|------|---------------------|
-| `invoice` | vendor, invoice#, date, due date, line items, subtotal, GST, total |
-| `contract` | parties, effective date, term, key clauses |
-| `receipt` | merchant, date, items, total, payment method |
-| `report` | title, date, summary, key figures |
-
----
-
-## Database Schema
-
-Two tables:
-
-**`documents`** — one row per uploaded file. 20 columns including `vendor_name`, `invoice_number`, `total_amount`, `ai_confidence` (0-1 float), `status` (queued/processing/completed/failed).
-
-**`extracted_fields`** — one row per field extracted. `field_name`, `field_value` (string), `field_type`, `confidence`, `is_verified`. Flexible — any document type, no schema changes needed.
-
-Migrations: `001_initial_schema.py`. Apply: `make migrate`.
-
----
-
-## How Confidence Score Works
-
-Claude returns `confidence_score: 0–100` with every extraction.
-- **90–100**: All fields clearly visible, no ambiguity
-- **60–89**: Some fields inferred or partially visible
-- **0–59**: Significant uncertainty — flag for human review
-
-Access it: `doc.ai_confidence` (stored as 0.0–1.0 float in DB).
-
----
-
-## n8n Google Drive Workflow
-
-Import `workflows/google_drive_pipeline_v1.json` at `http://localhost:5679`.
-
-Nodes: Google Drive Trigger → Is PDF? → Download → Upload to API → Wait 20s → Get Result → Extraction Completed? → Format Slack Message → Slack Notification
-
-Set env vars in n8n:
-- `GOOGLE_DRIVE_FOLDER_ID` — folder to watch
-- `SLACK_WEBHOOK_URL` — incoming webhook URL
-
----
-
-## CLI Usage
-
-```bash
-# Extract + Claude + store to DB
-python main.py --file invoice.pdf
-
-# Dry run — extract text only, no Claude, no DB
-python main.py --file invoice.pdf --dry-run
-
-# Process full directory
-python main.py --dir ./invoices/ --type invoice
-
-# Specific document type
-python main.py --file agreement.pdf --type contract
+```powershell
+py -3.12 -m venv venv
+.\venv\Scripts\python.exe -m pip install --upgrade pip
+.\venv\Scripts\python.exe -m pip install -r requirements.txt
+.\venv\Scripts\python.exe -m pytest -q
+.\venv\Scripts\ruff.exe check .
 ```
 
----
+If `.\venv\Scripts\python.exe` fails with a missing Python path, delete and
+recreate the venv with Python 3.12. A venv stores absolute interpreter paths.
 
-## Tests — 38 Passing
+Do not use Python 3.14 for local dependency verification. Some PDF packages used
+by this backend may not have compatible wheels there yet, while Render and the
+Dockerfile run Python 3.12.
 
-```bash
-pytest tests/ -v        # no Docker required
-make test-coverage      # HTML coverage report
+## Render Deployment
+
+Render uses `render.yaml` and the Dockerfile:
+
+```text
+runtime: docker
+health check: /health
+database: managed PostgreSQL
+app port: 8000 inside the container
 ```
 
-`test_api.py` (14) — all 12 endpoints, SQLite StaticPool isolation  
-`test_llm.py` (15) — Claude API mocked, all response paths including errors  
-`test_parser.py` (9) — pdfplumber/fitz mocked, fallback logic, truncation  
+Before deploying, set these Render environment variables:
 
----
+- `CEREBRAS_API_KEY`
+- `GROQ_API_KEY`
+- `GOOGLE_CLIENT_ID`
+- `AWS_ACCESS_KEY_ID`
+- `AWS_SECRET_ACCESS_KEY`
+- `AWS_STORAGE_BUCKET_NAME`
+- `AWS_S3_REGION_NAME`
+- `FRONTEND_URL`
+- optional SMTP variables if email verification, reset, or export email is enabled
 
-## Deployment
+## Main Endpoints
 
-```bash
-git push origin main                    # CI runs tests + lint + docker build
-# render.com → New → Blueprint → connect repo
-# Render reads render.yaml → creates web service + PostgreSQL
-# Add ANTHROPIC_API_KEY in Render Dashboard → Environment
-# Live at: https://doc-intelligence.onrender.com/docs
+All document routes are mounted under `/api/v1`.
+
+```text
+GET  /health
+GET  /api/v1/stats
+POST /api/v1/documents/upload
+GET  /api/v1/documents/
+GET  /api/v1/documents/{id}
+GET  /api/v1/documents/{id}/status
+GET  /api/v1/documents/{id}/fields
+GET  /api/v1/documents/{id}/download
+POST /api/v1/documents/{id}/reprocess
+DELETE /api/v1/documents/{id}
+POST /api/v1/documents/{id}/feedback
+GET  /api/v1/documents/{id}/export/csv
+GET  /api/v1/documents/{id}/export/excel
+GET  /api/v1/documents/{id}/export/email?to=user@example.com
+POST /auth/register
+POST /auth/login
+POST /auth/logout
+GET  /auth/me
+POST /auth/google
+POST /auth/forgot-password
+POST /auth/reset-password
+POST /auth/verify-email
 ```
 
----
+## Pre-Deploy Checklist
 
-## Connection to System 1 (Lead Gen)
-
-System 1 finds logistics companies that import goods. System 2 reads their freight invoices and finds overcharges. Together they are FreightGuard's complete acquisition + delivery pipeline.
-
-| System 1 does | System 2 does |
-|---|---|
-| Finds import/logistics companies | Audits their freight invoices |
-| AI-qualifies by ICP fit | Extracts structured data from PDFs |
-| Feeds outreach pipeline | Proves ROI to the customer |
+- `README.md`, `.env.example`, and `render.yaml` match the current backend env vars.
+- The app starts with `uvicorn api.main:app`.
+- `/health` returns `{"status": "ok"}`.
+- Uploading a PDF creates a queued document and starts background extraction.
+- A clean invoice with matching subtotal, tax, total, and line items can reach
+  `ai_confidence = 1.0`.
+- If Cerebras output is incomplete or below `0.99`, Groq fallback is attempted.
+- If Groq is rate-limited, the pipeline skips fallback instead of freezing.
+- S3 upload succeeds in production; local disk remains only a temporary fallback.
