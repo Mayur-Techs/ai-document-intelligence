@@ -84,6 +84,9 @@ WHITELISTED_IPS = {
     ip.strip() for ip in os.getenv("RATE_LIMIT_WHITELISTED_IPS", "").split(",") if ip.strip()
 }
 
+DISABLE_RATE_LIMIT = os.getenv("DISABLE_RATE_LIMIT", "false").lower() == "true"
+
+
 
 def check_ip_rate_limit(ip: str, db: Session, amount: int = 1) -> None:
     """
@@ -223,6 +226,9 @@ def enforce_rate_limit(
     Returns the IP address (useful for tagging anonymous documents).
     """
     ip = get_client_ip(request)
+
+    if DISABLE_RATE_LIMIT:
+        return ip
 
     if current_user:
         check_user_plan_limit(current_user, db, amount=amount)

@@ -42,7 +42,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from auth.core import get_current_user, get_optional_user
-from auth.rate_limit import get_client_ip
+from auth.rate_limit import enforce_rate_limit, get_client_ip
 from database.connection import get_db_for_fastapi
 from database.models import (
     Document,
@@ -179,9 +179,8 @@ async def upload_document(
     Poll GET /documents/{id}/status to check progress.
     Once status=completed, GET /documents/{id} returns extracted fields.
     """
-    # Rate limiting temporarily disabled — re-enable after initial testing
-    # ip = enforce_rate_limit(request, db, current_user)
-    ip = get_client_ip(request)  # still needed for anonymous doc ownership
+    # Enforce rate limits
+    ip = enforce_rate_limit(request, db, current_user)
 
     # Validate before touching DB
     validation = await validate_file(file)
@@ -240,8 +239,7 @@ async def batch_upload(
             results.append({"file": file.filename, "error": validation.error})
             continue
 
-        # ip = enforce_rate_limit(request, db, current_user)  # temporarily disabled
-        ip = get_client_ip(request)
+        ip = enforce_rate_limit(request, db, current_user)
         saved = await save_upload(file, validation)
         try:
             doc_type = DocumentType(document_type.lower())
