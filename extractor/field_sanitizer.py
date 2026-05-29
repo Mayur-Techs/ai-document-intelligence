@@ -9,8 +9,8 @@ No external imports — pure Python stdlib only.
 
 from __future__ import annotations
 
-import re
 import logging
+import re
 from datetime import datetime
 from typing import Any
 

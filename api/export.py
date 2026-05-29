@@ -217,7 +217,7 @@ def _build_excel(doc, scalars: dict, line_items: list[dict]) -> bytes:
     headers = ["#", "Description", "HSN Code", "Quantity", "Unit", "Unit Price", "Amount"]
     col_widths = [5, 50, 12, 10, 10, 14, 16]
 
-    for col, (h, w) in enumerate(zip(headers, col_widths), start=1):
+    for col, (h, w) in enumerate(zip(headers, col_widths, strict=True), start=1):
         ws2.column_dimensions[get_column_letter(col)].width = w
         cell = ws2.cell(row=1, column=col, value=h)
         cell.font = SUBHEAD_FONT

@@ -3,9 +3,9 @@ from .rules import RULES_CONFIDENCE_THRESHOLD, RulesResult, extract_from_tables,
 
 __all__ = [
     "ExtractionOutput",
-    "extract_fields",
-    "RulesResult",
-    "extract_from_text",
-    "extract_from_tables",
     "RULES_CONFIDENCE_THRESHOLD",
+    "RulesResult",
+    "extract_fields",
+    "extract_from_tables",
+    "extract_from_text",
 ]
