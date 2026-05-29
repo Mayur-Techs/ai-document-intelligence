@@ -1,0 +1,303 @@
+--- scratch/demo.html
+
++++ frontend/demo.html
+
+@@ -200,10 +200,6 @@
+
+       <h1 class="h2">Live Demo</h1>
+       <p style="font-size:14px;color:var(--text-500);margin-top:4px;">Upload a real PDF invoice. Watch it get extracted in real time. No account required.</p>
+     </div>
+-    <div style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-500);">
+-      <div class="status-dot js-status-dot" style="background:var(--text-700);"></div>
+-      <span class="js-api-status">Checking API...</span>
+-    </div>
+   </div>
+ 
+   <div class="demo-layout">
+@@ -283,11 +279,24 @@
+
+ </div>
+ 
+ <script>
+-// ── Config ───────────────────────────────────────────────────────────────────
+-
+ let selectedType = 'invoice';
+ let docs = [];
+ let selectedDocId = null;
++let isLoggedIn = false;
++
++// Silently check auth state on page load
++(async function() {
++  try {
++    const authRes = await fetch('https://doc-intelligence-api-tubh.onrender.com/auth/me', {
++      credentials: 'include'
++    });
++    isLoggedIn = authRes.ok;
++  } catch (e) {
++    isLoggedIn = false;
++  }
++  // Re-render if there's a selected document to reveal/blur the results
++  renderResults();
++})();
+ 
+ // ── Toast ────────────────────────────────────────────────────────────────────
+ function showToast(msg, type) {
+@@ -347,7 +356,7 @@
+
+   renderQueue();
+   renderResults();
+ 
+-  // Try real API first
++  // Try real API first (this helper uses credentials: include)
+   (typeof DocAPI !== 'undefined' && DocAPI.uploadDocument
+     ? DocAPI.uploadDocument(file, selectedType)
+     : Promise.reject('no api')
+@@ -364,6 +373,7 @@
+
+     var status = (err && err.status) || 0;
+ 
+     if (err.name === 'AbortError') {
++      // API took too long — show message, don't simulate
+       doc.status = 'failed';
+       doc.error = 'API is waking up. Please wait 30 seconds and try again.';
+       renderQueue();
+@@ -405,7 +415,7 @@
+
+     });
+   }
+ 
+-  // Fallback polling via fetch
++  // Fallback polling via fetch with credentials
+   return new Promise(function(resolve) {
+     var attempts = 0;
+     var timer = setInterval(function() {
+@@ -413,10 +423,10 @@
+
+       doc.progress = Math.min(90, 25 + attempts * 10);
+       renderQueue();
+ 
+-      fetch(API_BASE + '/documents/' + doc.docId)
++      fetch(API_BASE + '/documents/' + doc.docId, { credentials: 'include' })
+         .then(function(r) { return r.json(); })
+         .then(function(result) {
+-          if (result.status === 'completed' || result.status === 'failed' || attempts > 20) {
++          if (result.status === 'completed' || result.status === 'needs_review' || result.status === 'failed' || attempts > 20) {
+             clearInterval(timer);
+             doc.status = result.status;
+             doc.progress = 100;
+@@ -565,7 +575,40 @@
+
+   var isLive = !d._simulated;
+   var exportId = doc.docId;
+ 
+-  el.innerHTML = '<div class="result-card">'
++  var bodyStyle = isLoggedIn ? '' : ' style="filter: blur(6px); pointer-events: none; user-select: none;"';
++
++  var overlayHtml = '';
++  if (!isLoggedIn) {
++    overlayHtml = '<div class="blur-overlay" style="'
++      + 'position: absolute; top: 0; left: 0; right: 0; bottom: 0;'
++      + 'display: flex; align-items: center; justify-content: center;'
++      + 'background: rgba(15, 23, 42, 0.4); backdrop-filter: blur(2px);'
++      + 'z-index: 10; padding: 1.5rem;'
++      + '">'
++      + '<div class="overlay-card" style="'
++      + 'background: var(--navy-700); border: 1px solid var(--border); border-radius: var(--r-md);'
++      + 'padding: 2rem; max-width: 360px; text-align: center; box-shadow: 0 20px 40px rgba(0,0,0,0.5);'
++      + '">'
++      + '<div style="font-size: 1.75rem; margin-bottom: 1rem;">🔒</div>'
++      + '<h4 style="font-size: 16px; font-weight: 600; color: var(--text-100); margin-bottom: 0.5rem; margin-top: 0;">🔒 Extraction complete — sign up to view</h4>'
++      + '<p style="font-size: 13px; color: var(--text-400); margin-bottom: 1.5rem; line-height: 1.5;">'
++      + 'Your data is ready. Create a free account to access it.'
++      + '</p>'
++      + '<div style="display: flex; flex-direction: column; gap: 0.75rem;">'
++      + '<a href="/signup" style="'
++      + 'background: var(--gold-500); color: #000; font-weight: 600; border-radius: 8px;'
++      + 'padding: 10px; text-decoration: none; font-size: 13px; display: block; text-align: center;'
++      + '">Sign Up Free</a>'
++      + '<a href="/login" style="'
++      + 'background: transparent; border: 1px solid var(--border); color: var(--text-200); font-weight: 500;'
++      + 'border-radius: 8px; padding: 10px; text-decoration: none; font-size: 13px; display: block; text-align: center;'
++      + '">Sign In</a>'
++      + '</div>'
++      + '</div>'
++      + '</div>';
++  }
++
++  el.innerHTML = '<div class="result-card" style="position: relative;">'
+ 
+     // Header
+     + '<div class="result-header">'
+@@ -584,8 +627,9 @@
+
+     + '<div class="conf-lbl">conf.</div>'
+     + '</div></div></div>'
+ 
+-    // Body
+-    + '<div class="result-body">'
++    // Body container
++    + '<div class="result-body-container" style="position: relative;">'
++    + '<div class="result-body"' + bodyStyle + '>'
+ 
+     // Key fields
+     + '<div class="fields-section">'
+@@ -617,31 +661,36 @@
+
+     + '<summary style="font-size:12px;color:var(--text-500);cursor:pointer;user-select:none;padding:4px 0;">View raw JSON response</summary>'
+     + '<div class="json-viewer" style="margin-top:0.75rem;">' + formatJson(d) + '</div>'
+     + '</details>'
+-    + '</div>'
++    + '</div>' // closes result-body
++
++    + overlayHtml
++    + '</div>' // closes result-body-container
+ 
+     // Export bar
+-    + '<div class="export-bar">'
+-    + '<div style="display:flex;gap:6px;flex-wrap:wrap;">'
+-    + '<span class="badge badge-green">✓ pdfplumber</span>'
+-    + '<span class="badge badge-green">✓ Cerebras AI</span>'
+-    + (conf < 95 ? '<span class="badge badge-purple">+ Groq fallback</span>' : '<span class="badge badge-gold">High confidence</span>')
+-    + '</div>'
+-    + '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">'
+-    + '<button class="export-btn" onclick="copyJson()">📋 Copy JSON</button>'
+-    + (isLive
+-        ? '<button class="export-btn csv"    onclick="downloadCSV('   + exportId + ')">📊 CSV</button>'
+-        + '<button class="export-btn excel"  onclick="downloadExcel(' + exportId + ')">📗 Excel</button>'
+-        + '<button class="export-btn email-btn" onclick="toggleEmail()">✉️ Email</button>'
+-        : '<span style="font-size:11px;color:var(--text-600);">Upload a real PDF to enable CSV / Excel / Email</span>')
+-    + '</div>'
+-    + '</div>'
+-
+-    // Email row (hidden until toggled)
+-    + '<div class="email-row" id="emailBar">'
+-    + '<input type="email" id="emailInput" placeholder="recipient@company.com" />'
+-    + '<button class="email-send-btn" onclick="sendEmail(' + exportId + ')">Send Excel</button>'
+-    + '<span class="email-status" id="emailStatus"></span>'
+-    + '</div>'
++    + (isLoggedIn
++      ? '<div class="export-bar">'
++        + '<div style="display:flex;gap:6px;flex-wrap:wrap;">'
++        + '<span class="badge badge-green">✓ pdfplumber</span>'
++        + '<span class="badge badge-green">✓ Cerebras AI</span>'
++        + (conf < 95 ? '<span class="badge badge-purple">+ Groq fallback</span>' : '<span class="badge badge-gold">High confidence</span>')
++        + '</div>'
++        + '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">'
++        + '<button class="export-btn" onclick="copyJson()">📋 Copy JSON</button>'
++        + (isLive
++            ? '<button class="export-btn csv"    onclick="downloadCSV('   + exportId + ')">📊 CSV</button>'
++            + '<button class="export-btn excel"  onclick="downloadExcel(' + exportId + ')">📗 Excel</button>'
++            + '<button class="export-btn email-btn" onclick="toggleEmail()">✉️ Email</button>'
++            : '<span style="font-size:11px;color:var(--text-600);">Upload a real PDF to enable CSV / Excel / Email</span>')
++        + '</div>'
++        + '</div>'
++
++        // Email row (hidden until toggled)
++        + '<div class="email-row" id="emailBar">'
++        + '<input type="email" id="emailInput" placeholder="recipient@company.com" />'
++        + '<button class="email-send-btn" onclick="sendEmail(' + exportId + ')">Send Excel</button>'
++        + '<span class="email-status" id="emailStatus"></span>'
++        + '</div>'
++      : '')
+ 
+     + '</div>';   // closes result-card
+ 
+@@ -659,8 +708,13 @@
+
+ // ── Export functions ─────────────────────────────────────────────────────────
+ function downloadFile(url, filename) {
+   showToast('Preparing download...', 'success');
+-  fetch(url)
++  
++  fetch(url, { credentials: 'include' })
+     .then(function(r) {
++      if (r.status === 401) {
++        showToast('Please log in to download this document.', 'error');
++        throw new Error('Unauthorized');
++      }
+       if (!r.ok) throw new Error('Server returned ' + r.status);
+       return r.blob();
+     })
+@@ -676,7 +730,9 @@
+
+       showToast(filename + ' downloaded', 'success');
+     })
+     .catch(function(err) {
+-      showToast('Download failed — ' + err.message, 'error');
++      if (err.message !== 'Unauthorized') {
++        showToast('Download failed — ' + err.message, 'error');
++      }
+     });
+ }
+ 
+@@ -699,8 +755,18 @@
+
+   var status = document.getElementById('emailStatus');
+   if (!to || !to.includes('@')) { showToast('Enter a valid email address', 'error'); return; }
+   if (status) status.textContent = 'Sending...';
+-  fetch(API_BASE + '/documents/' + id + '/export/email?to=' + encodeURIComponent(to))
+-    .then(function(r) { return r.json(); })
++
++  fetch(API_BASE + '/documents/' + id + '/export/email?to=' + encodeURIComponent(to), {
++    credentials: 'include'
++  })
++    .then(function(r) { 
++      if (r.status === 401) {
++        showToast('Please log in to export this document.', 'error');
++        if (status) status.textContent = '✗ Unauthorized';
++        throw new Error('Unauthorized');
++      }
++      return r.json(); 
++    })
+     .then(function(data) {
+       if (data.success) {
+         showToast('Email sent to ' + to, 'success');
+@@ -712,7 +778,12 @@
+
+         if (status) status.textContent = '✗ Failed';
+       }
+     })
+-    .catch(function() { showToast('Network error', 'error'); });
++    .catch(function(err) { 
++      if (err.message !== 'Unauthorized') {
++        showToast('Network error', 'error'); 
++        if (status) status.textContent = '✗ Error';
++      }
++    });
+ }
+ 
+ // ── JSON helpers ─────────────────────────────────────────────────────────────
+@@ -725,6 +796,7 @@
+
+     .replace(/: (\d+\.?\d*)(,?\n)/g, ': <span class="json-num">$1</span>$2');
+ }
+ 
++// ── Copy JSON ──
+ function copyJson() {
+   if (!window._currentJson) return;
+   navigator.clipboard.writeText(JSON.stringify(window._currentJson, null, 2))
+@@ -733,7 +805,7 @@
+
+ }
+ 
+ // ── API status check ─────────────────────────────────────────────────────────
+-fetch(API_BASE + '/health')
++fetch('https://doc-intelligence-api-tubh.onrender.com/health', { credentials: 'include' })
+   .then(function(r) {
+     var dot  = document.querySelector('.js-status-dot');
+     var span = document.querySelector('.js-api-status');
+@@ -748,6 +820,13 @@
+
+     var span = document.querySelector('.js-api-status');
+     if (span) span.textContent = 'API offline (showing demo)';
+   });
++
++setTimeout(function() {
++  const statusEl = document.querySelector('.js-api-status');
++  if (statusEl && (statusEl.textContent === 'Checking API...' || statusEl.textContent === 'Connecting...')) {
++    statusEl.textContent = 'API warming up (30s)...';
++  }
++}, 5000);
+ </script>
+ </body>
+ </html>
