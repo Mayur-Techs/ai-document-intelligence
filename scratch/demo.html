@@ -359,9 +359,32 @@ function uploadFile(file) {
 
     return pollUntilDone(doc);
 
-  }).catch(function() {
-    // API unreachable — show simulated result
-    simulateExtraction(doc);
+  }).catch(function(err) {
+    var msg = (err && err.message) || '';
+    var status = (err && err.status) || 0;
+
+    if (err.name === 'AbortError') {
+      doc.status = 'failed';
+      doc.error = 'API is waking up. Please wait 30 seconds and try again.';
+      renderQueue();
+      renderResults();
+      showToast(doc.error, 'error');
+    } else if (status >= 400) {
+      doc.status = 'failed';
+      if (status === 401) {
+        doc.error = 'Authentication required. Please sign up or log in to upload documents.';
+      } else if (status === 429) {
+        doc.error = msg || 'Daily upload limit reached. Sign up for a higher quota.';
+      } else {
+        doc.error = msg || 'Server error (' + status + ')';
+      }
+      renderQueue();
+      renderResults();
+      showToast(doc.error, 'error');
+    } else {
+      // Truly unreachable — simulate as fallback
+      simulateExtraction(doc);
+    }
   });
 }
 

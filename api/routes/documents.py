@@ -44,7 +44,16 @@ from sqlalchemy.orm import Session
 from auth.core import get_current_user, get_optional_user
 from auth.rate_limit import enforce_rate_limit, get_client_ip
 from database.connection import get_db_for_fastapi
-from database.models import Document, DocumentType, ExtractedField, Feedback, ProcessingStatus, User
+from database.models import (
+    Document,
+    DocumentType,
+    ExtractedField,
+    Feedback,
+    IPRateLimit,
+    ProcessingStatus,
+    User,
+    UserPlan,
+)
 from extractor.pipeline import _resolve_path, process_document
 from upload.handler import save_upload, validate_file
 
@@ -599,3 +608,71 @@ def submit_feedback(
     db.add(feedback)
     db.commit()
     return {"success": True, "message": "Feedback submitted successfully"}
+
+
+@router.get("/debug/rate-limit")
+def get_rate_limit_debug(
+    request: Request,
+    current_user: User | None = Depends(get_optional_user),
+    db: Session = Depends(get_db_for_fastapi),
+):
+    """Get rate limit details for debugging and troubleshooting."""
+    from auth.rate_limit import IP_LIMIT, PLAN_LIMITS, get_client_ip
+
+    ip = get_client_ip(request)
+
+    ip_record = db.query(IPRateLimit).filter(IPRateLimit.ip_address == ip).first()
+    ip_usage = ip_record.request_count if ip_record else 0
+    ip_window_start = ip_record.window_start if ip_record else None
+
+    user_details = None
+    if current_user:
+        limits = PLAN_LIMITS.get(current_user.plan, PLAN_LIMITS[UserPlan.free])
+        user_details = {
+            "id": current_user.id,
+            "email": current_user.email,
+            "plan": current_user.plan.value,
+            "files_used_today": current_user.files_used_today,
+            "files_used_month": current_user.files_used_month,
+            "limit": limits["files"],
+            "last_reset_date": current_user.last_reset_date,
+        }
+
+    return {
+        "client_ip": ip,
+        "anonymous_usage": ip_usage,
+        "anonymous_limit": IP_LIMIT,
+        "anonymous_window_start": ip_window_start,
+        "user": user_details,
+    }
+
+
+@router.post("/debug/rate-limit/reset")
+def reset_rate_limit_debug(
+    request: Request,
+    current_user: User | None = Depends(get_optional_user),
+    db: Session = Depends(get_db_for_fastapi),
+):
+    """Reset rate limit usage for the caller's IP and account to allow testing."""
+    from auth.rate_limit import get_client_ip
+
+    ip = get_client_ip(request)
+
+    # 1. Reset IP rate limit
+    ip_record = db.query(IPRateLimit).filter(IPRateLimit.ip_address == ip).first()
+    if ip_record:
+        ip_record.request_count = 0
+        ip_record.window_start = datetime.now(timezone.utc).replace(tzinfo=None)
+        db.commit()
+
+    # 2. Reset User plan limits if logged in
+    if current_user:
+        current_user.files_used_today = 0
+        current_user.files_used_month = 0
+        current_user.last_reset_date = datetime.now(timezone.utc).replace(tzinfo=None)
+        db.commit()
+
+    return {
+        "success": True,
+        "message": f"Rate limit reset successful for IP {ip} and associated user.",
+    }
