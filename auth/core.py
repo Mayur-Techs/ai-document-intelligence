@@ -55,16 +55,14 @@ ACCESS_TOKEN_EXPIRE_HOURS = 24  # token valid for 24 hours
 #  Direct bcrypt is used instead of passlib for Python 3.12 compatibility.
 # ─────────────────────────────────────────────────────────────
 
+
 def hash_password(plain: str) -> str:
     salt = bcrypt.gensalt(rounds=12)
-    return bcrypt.hashpw(plain.encode('utf-8'), salt).decode('utf-8')
+    return bcrypt.hashpw(plain.encode("utf-8"), salt).decode("utf-8")
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return bcrypt.checkpw(
-        plain.encode('utf-8'),
-        hashed.encode('utf-8')
-    )
+    return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
 
 
 # ─────────────────────────────────────────────────────────────
@@ -108,6 +106,7 @@ def create_access_token(user_id: int, role: str) -> tuple[str, str]:
 #  Usage: add  current_user: User = Depends(get_current_user)
 #         to any route you want to protect
 # ─────────────────────────────────────────────────────────────
+
 
 def get_current_user(
     access_token: str | None = Cookie(default=None),

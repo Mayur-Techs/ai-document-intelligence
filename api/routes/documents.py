@@ -116,6 +116,39 @@ class FeedbackRequest(BaseModel):
     comment: str | None = None
 
 
+def _get_document_for_user(
+    document_id: int,
+    db: Session,
+    current_user: User | None,
+    request: Request,
+) -> Document:
+    """
+    Fetch document checking ownership:
+      - Logged-in user: must match user_id
+      - Anonymous user: must have user_id=None and matching client IP address
+    """
+    if current_user:
+        doc = (
+            db.query(Document)
+            .filter(Document.id == document_id, Document.user_id == current_user.id)
+            .first()
+        )
+    else:
+        ip = get_client_ip(request)
+        doc = (
+            db.query(Document)
+            .filter(
+                Document.id == document_id,
+                Document.user_id.is_(None),
+                Document.ip_address == ip,
+            )
+            .first()
+        )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return doc
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 
@@ -228,7 +261,9 @@ def get_stats(
     db: Session = Depends(get_db_for_fastapi),
 ) -> dict[str, Any]:
     """Aggregate processing stats for the logged-in user."""
-    total = db.query(func.count(Document.id)).filter(Document.user_id == current_user.id).scalar() or 0
+    total = (
+        db.query(func.count(Document.id)).filter(Document.user_id == current_user.id).scalar() or 0
+    )
     by_status = (
         db.query(Document.status, func.count(Document.id))
         .filter(Document.user_id == current_user.id)
@@ -343,10 +378,7 @@ def search_documents(
     query = (
         db.query(ExtractedField)
         .join(Document)
-        .filter(
-            Document.user_id == current_user.id,
-            ExtractedField.field_value.ilike(f"%{q}%")
-        )
+        .filter(Document.user_id == current_user.id, ExtractedField.field_value.ilike(f"%{q}%"))
     )
     if field_name:
         query = query.filter(ExtractedField.field_name == field_name)
@@ -366,45 +398,42 @@ def search_documents(
 @router.get("/{document_id}/status", response_model=DocumentStatusResponse)
 def get_status(
     document_id: int,
-    current_user: User = Depends(get_current_user),
+    request: Request,
+    current_user: User | None = Depends(get_optional_user),
     db: Session = Depends(get_db_for_fastapi),
 ) -> Document:
     """
     Lightweight status check — no fields returned.
     Poll this every 2-5 seconds after upload until status=completed.
     """
-    doc = db.query(Document).filter(Document.id == document_id, Document.user_id == current_user.id).first()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
-    return doc
+    return _get_document_for_user(document_id, db, current_user, request)
 
 
 @router.get("/{document_id}/fields", response_model=list[FieldResponse])
 def get_fields(
     document_id: int,
-    current_user: User = Depends(get_current_user),
+    request: Request,
+    current_user: User | None = Depends(get_optional_user),
     db: Session = Depends(get_db_for_fastapi),
 ) -> list[ExtractedField]:
     """All extracted fields for a document. Returns [] if not yet processed."""
-    doc = db.query(Document).filter(Document.id == document_id, Document.user_id == current_user.id).first()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    doc = _get_document_for_user(document_id, db, current_user, request)
     return doc.fields
 
 
 @router.get("/{document_id}/download")
 def download_document(
     document_id: int,
-    current_user: User = Depends(get_current_user),
+    request: Request,
+    current_user: User | None = Depends(get_optional_user),
     db: Session = Depends(get_db_for_fastapi),
 ) -> Response:
     """Download the original PDF file from S3 or local disk."""
-    doc = db.query(Document).filter(Document.id == document_id, Document.user_id == current_user.id).first()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    doc = _get_document_for_user(document_id, db, current_user, request)
 
     if doc.file_path and doc.file_path.startswith("s3://"):
         from utils.s3 import download_file_bytes
+
         s3_path = doc.file_path[5:]  # Remove "s3://"
         parts = s3_path.split("/", 1)
         key = parts[1] if len(parts) == 2 else s3_path
@@ -432,14 +461,12 @@ def download_document(
 @router.get("/{document_id}", response_model=DocumentResponse)
 def get_document(
     document_id: int,
-    current_user: User = Depends(get_current_user),
+    request: Request,
+    current_user: User | None = Depends(get_optional_user),
     db: Session = Depends(get_db_for_fastapi),
 ) -> Document:
     """Full document with all extracted fields."""
-    doc = db.query(Document).filter(Document.id == document_id, Document.user_id == current_user.id).first()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
-    return doc
+    return _get_document_for_user(document_id, db, current_user, request)
 
 
 @router.get("/", response_model=list[DocumentResponse])
@@ -466,7 +493,8 @@ def list_documents(
 async def reprocess(
     document_id: int,
     background_tasks: BackgroundTasks,
-    current_user: User = Depends(get_current_user),
+    request: Request,
+    current_user: User | None = Depends(get_optional_user),
     db: Session = Depends(get_db_for_fastapi),
 ) -> Document:
     """
@@ -474,9 +502,7 @@ async def reprocess(
     Use when: you updated the prompt, or previous run failed.
     Deletes all existing ExtractedField rows first.
     """
-    doc = db.query(Document).filter(Document.id == document_id, Document.user_id == current_user.id).first()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    doc = _get_document_for_user(document_id, db, current_user, request)
 
     # Clear previous extraction
     db.query(ExtractedField).filter(ExtractedField.document_id == document_id).delete()
@@ -496,13 +522,12 @@ async def reprocess(
 def verify_field(
     document_id: int,
     field_id: int,
-    current_user: User = Depends(get_current_user),
+    request: Request,
+    current_user: User | None = Depends(get_optional_user),
     db: Session = Depends(get_db_for_fastapi),
 ) -> ExtractedField:
     """Mark a field as human-verified. Used in review workflows."""
-    doc = db.query(Document).filter(Document.id == document_id, Document.user_id == current_user.id).first()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    _get_document_for_user(document_id, db, current_user, request)
 
     field = (
         db.query(ExtractedField)
@@ -523,16 +548,16 @@ def verify_field(
 @router.delete("/{document_id}", status_code=204, response_class=Response)
 def delete_document(
     document_id: int,
-    current_user: User = Depends(get_current_user),
+    request: Request,
+    current_user: User | None = Depends(get_optional_user),
     db: Session = Depends(get_db_for_fastapi),
 ):
-    doc = db.query(Document).filter(Document.id == document_id, Document.user_id == current_user.id).first()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    doc = _get_document_for_user(document_id, db, current_user, request)
 
     # Delete S3 file if present
     if doc.file_path and doc.file_path.startswith("s3://"):
         from utils.s3 import delete_file
+
         s3_path = doc.file_path[5:]
         parts = s3_path.split("/", 1)
         key = parts[1] if len(parts) == 2 else s3_path

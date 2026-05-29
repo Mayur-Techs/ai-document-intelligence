@@ -27,14 +27,14 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
 import openpyxl
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from auth.core import get_current_user
+from auth.core import get_optional_user
 from database.connection import get_db_for_fastapi
 from database.models import Document, ExtractedField, User
 
@@ -46,13 +46,33 @@ router = APIRouter(tags=["export"])
 # ─────────────────────────────────────────────────────────────
 
 
-def _get_doc_and_fields(doc_id: int, db: Session, user: User):
+def _get_doc_and_fields(
+    doc_id: int,
+    db: Session,
+    current_user: User | None,
+    request: Request,
+):
     """Fetch doc + fields, enforcing ownership. Returns 404 if not found or not owned."""
-    doc = (
-        db.query(Document)
-        .filter(Document.id == doc_id, Document.user_id == user.id)
-        .first()
-    )
+    if current_user:
+        doc = (
+            db.query(Document)
+            .filter(Document.id == doc_id, Document.user_id == current_user.id)
+            .first()
+        )
+    else:
+        from auth.rate_limit import get_client_ip
+
+        ip = get_client_ip(request)
+        doc = (
+            db.query(Document)
+            .filter(
+                Document.id == doc_id,
+                Document.user_id.is_(None),
+                Document.ip_address == ip,
+            )
+            .first()
+        )
+
     if not doc:
         # Deliberately 404 not 403: don't reveal that the document exists
         raise HTTPException(status_code=404, detail="Document not found")
@@ -85,11 +105,12 @@ def _line_item_rows(fields) -> list[dict]:
 @router.get("/documents/{doc_id}/export/csv")
 def export_csv(
     doc_id: int,
-    current_user: User = Depends(get_current_user),
+    request: Request,
+    current_user: User | None = Depends(get_optional_user),
     db: Session = Depends(get_db_for_fastapi),
 ):
     """Download extracted invoice data as a CSV file (only for documents you own)."""
-    doc, fields = _get_doc_and_fields(doc_id, db, current_user)
+    doc, fields = _get_doc_and_fields(doc_id, db, current_user, request)
     scalars = _scalar_rows(fields)
     line_items = _line_item_rows(fields)
 
@@ -249,11 +270,12 @@ def _build_excel(doc, scalars: dict, line_items: list[dict]) -> bytes:
 @router.get("/documents/{doc_id}/export/excel")
 def export_excel(
     doc_id: int,
-    current_user: User = Depends(get_current_user),
+    request: Request,
+    current_user: User | None = Depends(get_optional_user),
     db: Session = Depends(get_db_for_fastapi),
 ):
     """Download extracted invoice data as a formatted Excel (.xlsx) file (only for documents you own)."""
-    doc, fields = _get_doc_and_fields(doc_id, db, current_user)
+    doc, fields = _get_doc_and_fields(doc_id, db, current_user, request)
     scalars = _scalar_rows(fields)
     line_items = _line_item_rows(fields)
 
@@ -276,7 +298,8 @@ def export_excel(
 def export_email(
     doc_id: int,
     to: str,
-    current_user: User = Depends(get_current_user),
+    request: Request,
+    current_user: User | None = Depends(get_optional_user),
     db: Session = Depends(get_db_for_fastapi),
 ):
     """
@@ -301,7 +324,7 @@ def export_email(
             ),
         )
 
-    doc, fields = _get_doc_and_fields(doc_id, db, current_user)
+    doc, fields = _get_doc_and_fields(doc_id, db, current_user, request)
     scalars = _scalar_rows(fields)
     line_items = _line_item_rows(fields)
     xlsx_bytes = _build_excel(doc, scalars, line_items)

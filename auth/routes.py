@@ -143,6 +143,7 @@ def register(
 
     # Generate email verification token
     import secrets
+
     verification_token = secrets.token_hex(32)
     user.verification_token = verification_token
 
@@ -171,7 +172,9 @@ def register(
     frontend_url = os.getenv("FRONTEND_URL", "https://your-app.netlify.app")
 
     if smtp_host and smtp_user and smtp_pass:
-        verify_link = f"{frontend_url}/verify-email.html?token={verification_token}&email={body.email}"
+        verify_link = (
+            f"{frontend_url}/verify-email.html?token={verification_token}&email={body.email}"
+        )
         msg = MIMEMultipart()
         msg["From"] = smtp_user
         msg["To"] = body.email
@@ -199,7 +202,6 @@ def register(
         "email": user.email,
         "plan": user.plan.value,
     }
-
 
 
 # ─────────────────────────────────────────────────────────────
@@ -439,6 +441,7 @@ def reset_password(body: ResetPasswordRequest, db: Session = Depends(get_db_for_
     # Make timezone-aware for comparison
     if expires.tzinfo is None:
         from datetime import timezone as _tz
+
         expires = expires.replace(tzinfo=_tz.utc)
     if datetime.now(timezone.utc) > expires:
         raise invalid
@@ -567,4 +570,3 @@ def google_login(
         "plan": user.plan.value,
         "full_name": user.full_name,
     }
-

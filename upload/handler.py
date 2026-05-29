@@ -184,9 +184,6 @@ async def validate_file(upload_file) -> ValidationResult:
         )
 
 
-
-
-
 async def save_upload(upload_file, validation: ValidationResult) -> SavedFile:
     """
     Save a validated UploadFile to S3 (if enabled) or disk. Returns SavedFile with path + size.
@@ -216,5 +213,7 @@ async def save_upload(upload_file, validation: ValidationResult) -> SavedFile:
     stored_path = upload_dir / stored_name
     stored_path.write_bytes(content)
 
-    logger.info("Saved local: %s → %s (%d bytes)", validation.original_name, stored_path, len(content))
+    logger.info(
+        "Saved local: %s → %s (%d bytes)", validation.original_name, stored_path, len(content)
+    )
     return SavedFile(path=stored_path, size_bytes=len(content))

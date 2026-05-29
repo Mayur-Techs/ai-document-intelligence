@@ -151,7 +151,8 @@ def test_expired_db_session_rejected(client):
     db.commit()
     db.close()
 
-    response = client.get("/auth/me", cookies={"access_token": token})
+    client.cookies.set("access_token", token)
+    response = client.get("/auth/me")
 
     assert response.status_code == 401
 

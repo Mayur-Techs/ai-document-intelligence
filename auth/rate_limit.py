@@ -81,9 +81,7 @@ def get_client_ip(request: Request) -> str:
 # ─────────────────────────────────────────────────────────────
 
 WHITELISTED_IPS = {
-    ip.strip()
-    for ip in os.getenv("RATE_LIMIT_WHITELISTED_IPS", "").split(",")
-    if ip.strip()
+    ip.strip() for ip in os.getenv("RATE_LIMIT_WHITELISTED_IPS", "").split(",") if ip.strip()
 }
 
 

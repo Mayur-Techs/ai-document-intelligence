@@ -313,8 +313,14 @@ class TestDelete:
 class TestDocumentOwnership:
     def test_list_documents_excludes_other_users_documents(self, client):
         db = TestSessionLocal()
-        db.add(Document(file_name="mine.pdf", file_path="/mine.pdf", file_size_bytes=100, user_id=1))
-        db.add(Document(file_name="theirs.pdf", file_path="/theirs.pdf", file_size_bytes=100, user_id=2))
+        db.add(
+            Document(file_name="mine.pdf", file_path="/mine.pdf", file_size_bytes=100, user_id=1)
+        )
+        db.add(
+            Document(
+                file_name="theirs.pdf", file_path="/theirs.pdf", file_size_bytes=100, user_id=2
+            )
+        )
         db.commit()
         db.close()
 
@@ -326,7 +332,9 @@ class TestDocumentOwnership:
 
     def test_get_document_returns_404_for_other_users_document(self, client):
         db = TestSessionLocal()
-        doc = Document(file_name="private.pdf", file_path="/private.pdf", file_size_bytes=100, user_id=2)
+        doc = Document(
+            file_name="private.pdf", file_path="/private.pdf", file_size_bytes=100, user_id=2
+        )
         db.add(doc)
         db.commit()
         doc_id = doc.id
@@ -338,7 +346,9 @@ class TestDocumentOwnership:
 
     def test_delete_document_returns_404_for_other_users_document(self, client):
         db = TestSessionLocal()
-        doc = Document(file_name="private.pdf", file_path="/private.pdf", file_size_bytes=100, user_id=2)
+        doc = Document(
+            file_name="private.pdf", file_path="/private.pdf", file_size_bytes=100, user_id=2
+        )
         db.add(doc)
         db.commit()
         doc_id = doc.id
@@ -350,7 +360,9 @@ class TestDocumentOwnership:
 
     def test_export_csv_returns_404_for_other_users_document(self, client):
         db = TestSessionLocal()
-        doc = Document(file_name="private.pdf", file_path="/private.pdf", file_size_bytes=100, user_id=2)
+        doc = Document(
+            file_name="private.pdf", file_path="/private.pdf", file_size_bytes=100, user_id=2
+        )
         db.add(doc)
         db.commit()
         doc_id = doc.id
@@ -373,7 +385,7 @@ class TestFeedback:
         # Send feedback request
         r = client.post(
             f"/api/v1/documents/{doc_id}/feedback",
-            json={"rating": "positive", "comment": "Excellent extraction accuracy!"}
+            json={"rating": "positive", "comment": "Excellent extraction accuracy!"},
         )
         assert r.status_code == 200
         assert r.json()["success"] is True
@@ -381,6 +393,7 @@ class TestFeedback:
         # Verify database record
         db = TestSessionLocal()
         from database.models import Feedback
+
         feedback_rec = db.query(Feedback).filter(Feedback.document_id == doc_id).first()
         assert feedback_rec is not None
         assert feedback_rec.rating == 1
@@ -388,10 +401,7 @@ class TestFeedback:
         db.close()
 
     def test_submit_feedback_not_found(self, client):
-        r = client.post(
-            "/api/v1/documents/99999/feedback",
-            json={"rating": "negative"}
-        )
+        r = client.post("/api/v1/documents/99999/feedback", json={"rating": "negative"})
         assert r.status_code == 404
 
     def test_anonymous_feedback_cannot_target_registered_user_document(self, client):
@@ -399,7 +409,9 @@ class TestFeedback:
 
         app.dependency_overrides[get_optional_user] = lambda: None
         db = TestSessionLocal()
-        doc = Document(file_name="owned.pdf", file_path="/owned.pdf", file_size_bytes=500, user_id=1)
+        doc = Document(
+            file_name="owned.pdf", file_path="/owned.pdf", file_size_bytes=500, user_id=1
+        )
         db.add(doc)
         db.commit()
         doc_id = doc.id

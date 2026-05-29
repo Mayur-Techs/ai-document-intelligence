@@ -60,6 +60,7 @@ async def lifespan(app: FastAPI):  # type: ignore[type-arg]
     yield
     logger.info("Shutting down AI Document Intelligence API.")
 
+
 app = FastAPI(
     title="AI Document Intelligence API",
     debug=False,

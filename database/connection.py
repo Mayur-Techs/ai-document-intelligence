@@ -57,7 +57,6 @@ def init_db() -> None:
         ("users", "last_reset_date", "TIMESTAMP"),
     ]
 
-
     logger.info("Verifying table schemas and applying self-healing alters if needed...")
     for table, column, col_type in columns_to_add:
         try:
@@ -70,18 +69,21 @@ def init_db() -> None:
 
     # 2. Try to add foreign key constraint in a separate transaction
     try:
-        db.execute(text(
-            "ALTER TABLE documents ADD CONSTRAINT fk_documents_user_id "
-            "FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL"
-        ))
+        db.execute(
+            text(
+                "ALTER TABLE documents ADD CONSTRAINT fk_documents_user_id "
+                "FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL"
+            )
+        )
         db.commit()
         logger.info("Foreign key constraint fk_documents_user_id verified/added.")
     except Exception as e:
         db.rollback()
-        logger.info("Foreign key constraint fk_documents_user_id not added (it may already exist): %s", e)
+        logger.info(
+            "Foreign key constraint fk_documents_user_id not added (it may already exist): %s", e
+        )
     finally:
         db.close()
-
 
 
 @contextmanager

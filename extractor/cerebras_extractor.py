@@ -40,7 +40,8 @@ MODEL = "gpt-oss-120b"
 
 
 def extract_text_from_pdf(pdf_bytes: bytes) -> str:
-    """Pull text from every page using pdfplumber. No API call needed."""
+    """Pull text from every page using pdfplumber. Fallback to PyMuPDF (fitz)."""
+    full_text = ""
     try:
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
             pages = []
@@ -52,12 +53,33 @@ def extract_text_from_pdf(pdf_bytes: bytes) -> str:
                         if row_text.strip(" |"):
                             text += "\n" + row_text
                 pages.append(f"--- PAGE {i} ---\n{text}")
-            full = "\n\n".join(pages).strip()
-            logger.info("pdfplumber: %d chars from %d pages", len(full), len(pdf.pages))
-            return full
+            full_text = "\n\n".join(pages).strip()
+            logger.info("pdfplumber: %d chars from %d pages", len(full_text), len(pdf.pages))
     except Exception as e:
         logger.error("pdfplumber failed: %s", e)
-        return ""
+
+    if len(full_text.strip()) > 50:
+        return full_text
+
+    # Try PyMuPDF (fitz) fallback
+    try:
+        import fitz
+
+        logger.info(
+            "pdfplumber gave sparse text (%d chars) — trying PyMuPDF fallback...",
+            len(full_text),
+        )
+        with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+            pages = []
+            for i, page in enumerate(doc, start=1):
+                text = page.get_text("text") or ""
+                pages.append(f"--- PAGE {i} ---\n{text}")
+            full_text = "\n\n".join(pages).strip()
+            logger.info("PyMuPDF fallback: %d chars from %d pages", len(full_text), len(doc))
+    except Exception as e:
+        logger.error("PyMuPDF fallback failed: %s", e)
+
+    return full_text
 
 
 # ─────────────────────────────────────────────────────────────

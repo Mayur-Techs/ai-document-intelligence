@@ -39,7 +39,9 @@ def _get_s3_client():
     return boto3.client("s3", **client_kwargs)
 
 
-def upload_file_bytes(file_bytes: bytes, key: str, content_type: str = "application/pdf") -> str | None:
+def upload_file_bytes(
+    file_bytes: bytes, key: str, content_type: str = "application/pdf"
+) -> str | None:
     """
     Upload raw bytes to the configured S3 bucket.
     Returns the s3:// URI (e.g., s3://my-bucket/filename.pdf) on success.
@@ -50,7 +52,12 @@ def upload_file_bytes(file_bytes: bytes, key: str, content_type: str = "applicat
         return None
 
     try:
-        logger.info("Uploading %d bytes to S3 bucket %s with key %s...", len(file_bytes), AWS_STORAGE_BUCKET_NAME, key)
+        logger.info(
+            "Uploading %d bytes to S3 bucket %s with key %s...",
+            len(file_bytes),
+            AWS_STORAGE_BUCKET_NAME,
+            key,
+        )
         s3_client.put_object(
             Bucket=AWS_STORAGE_BUCKET_NAME,
             Key=key,
@@ -72,7 +79,9 @@ def download_file_bytes(key: str) -> bytes:
         raise ValueError("S3 client is not enabled. Cannot download file.")
 
     try:
-        logger.info("Downloading file with key %s from S3 bucket %s...", key, AWS_STORAGE_BUCKET_NAME)
+        logger.info(
+            "Downloading file with key %s from S3 bucket %s...", key, AWS_STORAGE_BUCKET_NAME
+        )
         response = s3_client.get_object(Bucket=AWS_STORAGE_BUCKET_NAME, Key=key)
         return response["Body"].read()
     except ClientError as e:

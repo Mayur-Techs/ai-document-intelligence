@@ -200,6 +200,7 @@ async def process_document(document_id: int) -> None:
     try:
         if is_s3:
             from utils.s3 import download_file_bytes
+
             # S3 URI is "s3://bucket-name/key"
             s3_path = raw_file_path[5:]  # Remove "s3://"
             parts = s3_path.split("/", 1)
