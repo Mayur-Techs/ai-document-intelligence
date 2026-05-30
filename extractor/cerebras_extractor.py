@@ -39,7 +39,7 @@ from extractor.field_sanitizer import sanitize
 logger = logging.getLogger("docai.cerebras")
 
 # Try the newer model first; fall back if 404
-PRIMARY_MODEL = "llama-3.3-70b"
+PRIMARY_MODEL = "llama3.3-70b"
 FALLBACK_MODEL = "llama3.1-8b"  # smallest always-available model as last resort
 
 
