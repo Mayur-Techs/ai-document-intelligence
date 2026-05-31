@@ -5,6 +5,7 @@ resilience, threshold fallback behavior, and consecutive failure rate-limiting.
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -367,3 +368,25 @@ async def test_provider_busy_skips_to_next(mock_db_session, mock_resolve_path):
     assert doc_after.vendor_name == "Gemini Vendor Only"
     assert doc_after.ai_confidence == 0.98
     db.close()
+
+
+@pytest.mark.asyncio
+async def test_concurrency_semaphore_limits_active_tasks(mock_db_session, mock_resolve_path):
+    active_tasks = 0
+    max_observed_active_tasks = 0
+
+    async def mock_impl(document_id):
+        nonlocal active_tasks, max_observed_active_tasks
+        active_tasks += 1
+        max_observed_active_tasks = max(max_observed_active_tasks, active_tasks)
+        await asyncio.sleep(0.1)
+        active_tasks -= 1
+
+    # Patch the _process_document_impl to our mock
+    with patch("extractor.pipeline._process_document_impl", side_effect=mock_impl):
+        # Run 5 processing tasks concurrently
+        tasks = [process_document(i) for i in range(1, 6)]
+        await asyncio.gather(*tasks)
+
+    # Check that at any point, the maximum active tasks did not exceed 3
+    assert max_observed_active_tasks == 3

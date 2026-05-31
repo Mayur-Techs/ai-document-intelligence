@@ -39,6 +39,7 @@ CONSECUTIVE_TIER1_FAILURES = 0
 GROQ_LOCK = asyncio.Lock()
 MISTRAL_LOCK = asyncio.Lock()
 GEMINI_LOCK = asyncio.Lock()
+EXTRACTION_SEMAPHORE = asyncio.Semaphore(3)
 
 
 def _session() -> Session:
@@ -179,6 +180,11 @@ def _mark_failed(doc_id: int, reason: str) -> None:
 
 
 async def process_document(document_id: int) -> None:
+    async with EXTRACTION_SEMAPHORE:
+        await _process_document_impl(document_id)
+
+
+async def _process_document_impl(document_id: int) -> None:
     logger.info("═══ Pipeline START  doc id=%d ═══", document_id)
 
     # 1. Load document from DB
