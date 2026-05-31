@@ -29,10 +29,9 @@ import logging
 import os
 import re
 import time
-
+from typing import Any
 
 import pdfplumber
-from typing import Any
 
 from extractor.extraction_prompts import INVOICE_SYSTEM_PROMPT, build_extraction_prompt
 from extractor.field_sanitizer import sanitize
