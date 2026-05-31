@@ -26,9 +26,6 @@ jobs:
         ports:
           - 5432:5432
 
-    permissions:
-      contents: write
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -52,23 +49,7 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           TESTING: "true"
-        run: |
-          pytest tests/ -v --tb=short > pytest_run.log 2>&1 || touch failed.txt
-          if [ -f failed.txt ]; then
-            echo "Tests failed. Committing log..."
-            git config --global user.name "GitHub Actions"
-            git config --global user.email "actions@github.com"
-            git checkout -b ci-debug
-            echo "=== PIP SHOW MISTRALAI ===" >> pytest_run.log
-            pip show mistralai >> pytest_run.log 2>&1
-            echo "=== PIP LIST ===" >> pytest_run.log
-            pip list >> pytest_run.log 2>&1
-            mv pytest_run.log ci_test_failure.log
-            git add ci_test_failure.log
-            git commit -m "chore: upload CI test failure log [skip ci]"
-            git push -f origin ci-debug
-            exit 1
-          fi
+        run: pytest tests/ -v --tb=short
 
       - name: Verify imports
         env:
