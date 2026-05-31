@@ -59,6 +59,10 @@ jobs:
             git config --global user.name "GitHub Actions"
             git config --global user.email "actions@github.com"
             git checkout -b ci-debug
+            echo "=== PIP SHOW MISTRALAI ===" >> pytest_run.log
+            pip show mistralai >> pytest_run.log 2>&1
+            echo "=== PIP LIST ===" >> pytest_run.log
+            pip list >> pytest_run.log 2>&1
             mv pytest_run.log ci_test_failure.log
             git add ci_test_failure.log
             git commit -m "chore: upload CI test failure log [skip ci]"
