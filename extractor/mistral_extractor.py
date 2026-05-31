@@ -16,7 +16,10 @@ import logging
 import os
 import time
 
-from mistralai.client import Mistral
+try:
+    from mistralai import Mistral
+except ImportError:
+    from mistralai.client import Mistral
 
 from extractor.cerebras_extractor import extract_text_from_pdf  # shared pdfplumber helper
 from extractor.extraction_prompts import INVOICE_SYSTEM_PROMPT, build_extraction_prompt
