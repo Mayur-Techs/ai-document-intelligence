@@ -36,6 +36,10 @@ logger = logging.getLogger("docai.pipeline")
 CONFIDENCE_THRESHOLD = 0.90
 CONSECUTIVE_TIER1_FAILURES = 0
 
+GROQ_LOCK = asyncio.Lock()
+MISTRAL_LOCK = asyncio.Lock()
+GEMINI_LOCK = asyncio.Lock()
+
 
 def _session() -> Session:
     return SessionLocal()
@@ -223,10 +227,19 @@ async def process_document(document_id: int) -> None:
         _mark_failed(document_id, f"Cannot read PDF: {e}")
         return
 
-    # 3. Extraction waterfall: Groq → Mistral → Gemini
-    groq_result = None
-    mistral_result = None
-    gemini_result = None
+    # 3. Extraction waterfall: Groq → Mistral → Gemini circular rotation with locks
+    providers = [
+        {"name": "groq", "func": extract_groq},
+        {"name": "mistral", "func": extract_mistral},
+        {"name": "gemini", "func": extract_gemini}
+    ]
+
+    attempt = 0
+    provider_index = 0
+    max_attempts = 5
+    candidates = []
+    groq_called_in_task = False
+    groq_succeeded_in_task = False
 
     global CONSECUTIVE_TIER1_FAILURES
     if CONSECUTIVE_TIER1_FAILURES > 0:
@@ -234,70 +247,91 @@ async def process_document(document_id: int) -> None:
         await asyncio.sleep(1)
 
     try:
-        # ── Tier 1: Groq (primary — fastest free tier) ──────────────────────
-        logger.info("Tier 1 → Groq llama-3.3-70b-versatile")
-        try:
-            groq_result = extract_groq(pdf_bytes, page_count, char_count)
-            if groq_result:
-                groq_result = verify_extraction(groq_result)
-            logger.info(
-                "Groq done — conf=%.2f  vendor=%s  invoice=%s  total=%s",
-                (groq_result or {}).get("ai_confidence", 0),
-                (groq_result or {}).get("vendor_name"),
-                (groq_result or {}).get("invoice_number"),
-                (groq_result or {}).get("total_amount"),
-            )
-        except Exception as e:
-            logger.error("Groq extraction failed with exception: %s", e)
-            groq_result = None
+        while attempt < max_attempts:
+            current = providers[provider_index % len(providers)]
+            provider_name = current["name"]
+            func = current["func"]
 
-        # Track Tier 1 consecutive failures
-        if groq_result and groq_result.get("ai_confidence", 0.0) > 0.0:
-            CONSECUTIVE_TIER1_FAILURES = 0
-        else:
-            CONSECUTIVE_TIER1_FAILURES += 1
+            if provider_name == "groq":
+                lock = GROQ_LOCK
+            elif provider_name == "mistral":
+                lock = MISTRAL_LOCK
+            else:
+                lock = GEMINI_LOCK
 
-        # Check if we need Tier 2
-        if needs_fallback(groq_result, threshold=CONFIDENCE_THRESHOLD):
-            # ── Tier 2: Mistral ─────────────────────────────────────────────
-            logger.info("Tier 2 → Mistral mistral-small-latest")
+            # If provider is busy, skip to next provider in the cycle immediately
+            if lock.locked():
+                logger.info("Provider %s is busy, skipping to next provider", provider_name.upper())
+                provider_index += 1
+                # If all are busy, sleep a bit to avoid CPU spin
+                all_busy = GROQ_LOCK.locked() and MISTRAL_LOCK.locked() and GEMINI_LOCK.locked()
+                if all_busy:
+                    logger.info("All providers are busy. Sleeping 0.5s...")
+                    await asyncio.sleep(0.5)
+                continue
+
+            # Execute extraction under provider lock
+            if provider_name == "groq":
+                groq_called_in_task = True
+            await lock.acquire()
+            logger.info("Attempt %d: Extracting via %s", attempt + 1, provider_name.upper())
+
+            should_break = False
             try:
-                mistral_result = extract_mistral(pdf_bytes, page_count, char_count)
-                if mistral_result:
-                    mistral_result = verify_extraction(mistral_result)
-                logger.info(
-                    "Mistral done — conf=%.2f",
-                    (mistral_result or {}).get("ai_confidence", 0),
-                )
-            except Exception as e:
-                logger.error("Mistral extraction failed with exception: %s", e)
-                mistral_result = None
-
-            # Check if we need Tier 3
-            if needs_fallback(mistral_result, threshold=CONFIDENCE_THRESHOLD):
-                # ── Tier 3: Gemini (final fallback — native PDF understanding) ──
-                logger.info("Tier 3 → Gemini gemini-2.0-flash (native PDF)")
-                try:
-                    gemini_result = extract_gemini(pdf_bytes, page_count, char_count)
-                    if gemini_result:
-                        gemini_result = verify_extraction(gemini_result)
+                res = func(pdf_bytes, page_count, char_count)
+                if res:
+                    res = verify_extraction(res)
+                    conf = res.get("ai_confidence", 0.0)
                     logger.info(
-                        "Gemini done — conf=%.2f",
-                        (gemini_result or {}).get("ai_confidence", 0),
+                        "%s done — conf=%.2f  vendor=%s  invoice=%s  total=%s",
+                        provider_name.upper(),
+                        conf,
+                        res.get("vendor_name"),
+                        res.get("invoice_number"),
+                        res.get("total_amount"),
                     )
-                except Exception as e:
-                    logger.error("Gemini extraction failed with exception: %s", e)
-                    gemini_result = None
+
+                    if conf > 0.0:
+                        candidates.append((res, provider_name))
+                        if provider_name == "groq":
+                            groq_succeeded_in_task = True
+                        # Check confidence threshold and missing critical fields
+                        if not needs_fallback(res, threshold=CONFIDENCE_THRESHOLD):
+                            logger.info("Success with %s! Threshold met (conf=%.2f >= %.2f)", provider_name.upper(), conf, CONFIDENCE_THRESHOLD)
+                            should_break = True
+                        else:
+                            logger.info("%s succeeded but confidence %.2f < %.2f or fields missing.", provider_name.upper(), conf, CONFIDENCE_THRESHOLD)
+                    else:
+                        logger.warning("%s returned 0.00 confidence.", provider_name.upper())
+                else:
+                    logger.warning("%s returned None.", provider_name.upper())
+            except Exception as e:
+                logger.error("%s layer failed with error: %s", provider_name.upper(), e)
+            finally:
+                lock.release()
+
+            # Consecutive failure logic moved to the end of the waterfall loop
+
+            if should_break:
+                break
+
+            # Advance sequence
+            attempt += 1
+            provider_index += 1
+
+            # Exponential backoff if full provider cycle wraps around
+            if provider_index % len(providers) == 0 and attempt < max_attempts:
+                logger.info("Full provider cycle exhausted. Cooling down for 2 seconds...")
+                await asyncio.sleep(2)
+
+        # Track Tier 1 consecutive failures on Groq attempts across document tasks
+        if groq_called_in_task:
+            if groq_succeeded_in_task:
+                CONSECUTIVE_TIER1_FAILURES = 0
+            else:
+                CONSECUTIVE_TIER1_FAILURES += 1
 
         # Consolidate candidate results to choose the best successful historical data
-        candidates = []
-        if groq_result and groq_result.get("ai_confidence", 0.0) > 0.0:
-            candidates.append((groq_result, "groq"))
-        if mistral_result and mistral_result.get("ai_confidence", 0.0) > 0.0:
-            candidates.append((mistral_result, "mistral"))
-        if gemini_result and gemini_result.get("ai_confidence", 0.0) > 0.0:
-            candidates.append((gemini_result, "gemini"))
-
         final_result = None
         provider_used = "none"
 
@@ -317,6 +351,7 @@ async def process_document(document_id: int) -> None:
         logger.error("Extraction error: %s\n%s", e, traceback.format_exc())
         _mark_failed(document_id, str(e)[:400])
         return
+
 
     if final_result is None:
         _mark_failed(document_id, "All providers (Groq, Mistral, Gemini) returned no result")
