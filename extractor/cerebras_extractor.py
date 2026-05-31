@@ -30,8 +30,9 @@ import os
 import re
 import time
 
+
 import pdfplumber
-from cerebras.cloud.sdk import Cerebras
+from typing import Any
 
 from extractor.extraction_prompts import INVOICE_SYSTEM_PROMPT, build_extraction_prompt
 from extractor.field_sanitizer import sanitize
@@ -206,7 +207,8 @@ def _try_repair_json(raw: str) -> dict | None:
 # ─────────────────────────────────────────────────────────────
 
 
-def _get_client() -> Cerebras:
+def _get_client() -> Any:
+    from cerebras.cloud.sdk import Cerebras
     key = os.getenv("CEREBRAS_API_KEY")
     if not key:
         raise OSError(
