@@ -13,6 +13,7 @@ Also updates platform_stats after every extraction for the live counter.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -32,7 +33,8 @@ from extractor.mistral_extractor import extract_mistral
 
 logger = logging.getLogger("docai.pipeline")
 
-CONFIDENCE_THRESHOLD = 0.99
+CONFIDENCE_THRESHOLD = 0.90
+CONSECUTIVE_TIER1_FAILURES = 0
 
 
 def _session() -> Session:
@@ -222,67 +224,94 @@ async def process_document(document_id: int) -> None:
         return
 
     # 3. Extraction waterfall: Groq → Mistral → Gemini
-    final_result = None
-    provider_used = "none"
+    groq_result = None
+    mistral_result = None
+    gemini_result = None
+
+    global CONSECUTIVE_TIER1_FAILURES
+    if CONSECUTIVE_TIER1_FAILURES > 0:
+        logger.info("Consecutive Tier 1 failures detected (%d). Sleeping 1s for quota reset...", CONSECUTIVE_TIER1_FAILURES)
+        await asyncio.sleep(1)
 
     try:
         # ── Tier 1: Groq (primary — fastest free tier) ──────────────────────
         logger.info("Tier 1 → Groq llama-3.3-70b-versatile")
-        groq_result = extract_groq(pdf_bytes, page_count, char_count)
-        if groq_result:
-            groq_result = verify_extraction(groq_result)
-        logger.info(
-            "Groq done — conf=%.2f  vendor=%s  invoice=%s  total=%s",
-            (groq_result or {}).get("ai_confidence", 0),
-            (groq_result or {}).get("vendor_name"),
-            (groq_result or {}).get("invoice_number"),
-            (groq_result or {}).get("total_amount"),
-        )
+        try:
+            groq_result = extract_groq(pdf_bytes, page_count, char_count)
+            if groq_result:
+                groq_result = verify_extraction(groq_result)
+            logger.info(
+                "Groq done — conf=%.2f  vendor=%s  invoice=%s  total=%s",
+                (groq_result or {}).get("ai_confidence", 0),
+                (groq_result or {}).get("vendor_name"),
+                (groq_result or {}).get("invoice_number"),
+                (groq_result or {}).get("total_amount"),
+            )
+        except Exception as e:
+            logger.error("Groq extraction failed with exception: %s", e)
+            groq_result = None
 
-        if not needs_fallback(groq_result, threshold=CONFIDENCE_THRESHOLD):
-            final_result = groq_result
-            provider_used = "groq"
+        # Track Tier 1 consecutive failures
+        if groq_result and groq_result.get("ai_confidence", 0.0) > 0.0:
+            CONSECUTIVE_TIER1_FAILURES = 0
         else:
+            CONSECUTIVE_TIER1_FAILURES += 1
+
+        # Check if we need Tier 2
+        if needs_fallback(groq_result, threshold=CONFIDENCE_THRESHOLD):
             # ── Tier 2: Mistral ─────────────────────────────────────────────
             logger.info("Tier 2 → Mistral mistral-small-latest")
-            mistral_result = extract_mistral(pdf_bytes, page_count, char_count)
-            if mistral_result:
-                mistral_result = verify_extraction(mistral_result)
-            logger.info(
-                "Mistral done — conf=%.2f",
-                (mistral_result or {}).get("ai_confidence", 0),
-            )
-
-            if not needs_fallback(mistral_result, threshold=CONFIDENCE_THRESHOLD):
-                # Mistral succeeded — optionally merge with Groq partial result
-                if groq_result and mistral_result:
-                    final_result = merge_best(groq_result, mistral_result)
-                else:
-                    final_result = mistral_result or groq_result
-                provider_used = "mistral"
-            else:
-                # ── Tier 3: Gemini (final fallback — native PDF understanding) ──
-                logger.info("Tier 3 → Gemini gemini-1.5-flash (native PDF)")
-                gemini_result = extract_gemini(pdf_bytes, page_count, char_count)
-                if gemini_result:
-                    gemini_result = verify_extraction(gemini_result)
+            try:
+                mistral_result = extract_mistral(pdf_bytes, page_count, char_count)
+                if mistral_result:
+                    mistral_result = verify_extraction(mistral_result)
                 logger.info(
-                    "Gemini done — conf=%.2f",
-                    (gemini_result or {}).get("ai_confidence", 0),
+                    "Mistral done — conf=%.2f",
+                    (mistral_result or {}).get("ai_confidence", 0),
                 )
+            except Exception as e:
+                logger.error("Mistral extraction failed with exception: %s", e)
+                mistral_result = None
 
-                # Pick the best result from all three
-                candidates = [r for r in [groq_result, mistral_result, gemini_result] if r]
-                if candidates:
-                    # Use the one with highest confidence, then merge improvements
-                    best = max(candidates, key=lambda r: r.get("ai_confidence", 0))
-                    for other in candidates:
-                        if other is not best:
-                            best = merge_best(best, other)
-                    final_result = best
-                    provider_used = "gemini"
-                else:
-                    final_result = None
+            # Check if we need Tier 3
+            if needs_fallback(mistral_result, threshold=CONFIDENCE_THRESHOLD):
+                # ── Tier 3: Gemini (final fallback — native PDF understanding) ──
+                logger.info("Tier 3 → Gemini gemini-2.0-flash (native PDF)")
+                try:
+                    gemini_result = extract_gemini(pdf_bytes, page_count, char_count)
+                    if gemini_result:
+                        gemini_result = verify_extraction(gemini_result)
+                    logger.info(
+                        "Gemini done — conf=%.2f",
+                        (gemini_result or {}).get("ai_confidence", 0),
+                    )
+                except Exception as e:
+                    logger.error("Gemini extraction failed with exception: %s", e)
+                    gemini_result = None
+
+        # Consolidate candidate results to choose the best successful historical data
+        candidates = []
+        if groq_result and groq_result.get("ai_confidence", 0.0) > 0.0:
+            candidates.append((groq_result, "groq"))
+        if mistral_result and mistral_result.get("ai_confidence", 0.0) > 0.0:
+            candidates.append((mistral_result, "mistral"))
+        if gemini_result and gemini_result.get("ai_confidence", 0.0) > 0.0:
+            candidates.append((gemini_result, "gemini"))
+
+        final_result = None
+        provider_used = "none"
+
+        if candidates:
+            # Use the one with the highest confidence
+            best_candidate, provider_used = max(candidates, key=lambda c: c[0].get("ai_confidence", 0.0))
+            final_result = best_candidate
+
+            # Merge improvements from other successful candidates
+            for other, _ in candidates:
+                if other is not final_result:
+                    final_result = merge_best(final_result, other)
+        else:
+            final_result = None
 
     except Exception as e:
         logger.error("Extraction error: %s\n%s", e, traceback.format_exc())

@@ -1,0 +1,121 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.13, pytest-9.0.3, pluggy-1.6.0 -- /opt/hostedtoolcache/Python/3.12.13/x64/bin/python
+cachedir: .pytest_cache
+rootdir: /home/runner/work/ai-document-intelligence/ai-document-intelligence
+configfile: pyproject.toml
+plugins: asyncio-1.4.0, anyio-4.13.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 64 items / 1 error
+
+==================================== ERRORS ====================================
+_______________ ERROR collecting tests/test_anonymous_access.py ________________
+ImportError while importing test module '/home/runner/work/ai-document-intelligence/ai-document-intelligence/tests/test_anonymous_access.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/opt/hostedtoolcache/Python/3.12.13/x64/lib/python3.12/importlib/__init__.py:90: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/test_anonymous_access.py:9: in <module>
+    from api.main import app
+api/main.py:22: in <module>
+    from api.routes.documents import router as documents_router
+api/routes/documents.py:57: in <module>
+    from extractor.pipeline import _resolve_path, process_document
+extractor/pipeline.py:31: in <module>
+    from extractor.mistral_extractor import extract_mistral
+extractor/mistral_extractor.py:19: in <module>
+    from mistralai.client import Mistral
+E   ImportError: cannot import name 'Mistral' from 'mistralai.client' (/opt/hostedtoolcache/Python/3.12.13/x64/lib/python3.12/site-packages/mistralai/client.py)
+=========================== short test summary info ============================
+ERROR tests/test_anonymous_access.py
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+=============================== 1 error in 4.28s ===============================
+=== PIP SHOW MISTRALAI ===
+Name: mistralai
+Version: 1.5.2
+Summary: Python Client SDK for the Mistral AI API.
+Home-page: 
+Author: Mistral
+Author-email: 
+License: 
+Location: /opt/hostedtoolcache/Python/3.12.13/x64/lib/python3.12/site-packages
+Requires: eval-type-backport, httpx, jsonpath-python, pydantic, python-dateutil, typing-inspect
+Required-by: 
+=== PIP LIST ===
+Package            Version
+------------------ -----------
+aiofiles           24.1.0
+alembic            1.13.3
+annotated-types    0.7.0
+anyio              4.13.0
+bcrypt             5.0.0
+boto3              1.43.18
+botocore           1.43.18
+certifi            2026.5.20
+cffi               2.0.0
+charset-normalizer 3.4.7
+click              8.4.1
+cryptography       48.0.0
+distro             1.9.0
+dnspython          2.8.0
+ecdsa              0.19.2
+email-validator    2.3.0
+et_xmlfile         2.0.0
+eval_type_backport 0.3.1
+fastapi            0.115.0
+google-auth        2.53.0
+google-genai       2.7.0
+greenlet           3.5.1
+groq               1.4.0
+h11                0.16.0
+httpcore           1.0.9
+httptools          0.8.0
+httpx              0.28.1
+idna               3.17
+iniconfig          2.3.0
+jmespath           1.1.0
+jsonpath-python    1.1.6
+Mako               1.3.12
+MarkupSafe         3.0.3
+mistralai          1.5.2
+mypy_extensions    1.1.0
+openpyxl           3.1.5
+packaging          26.2
+pdfminer.six       20231228
+pdfplumber         0.11.4
+pillow             12.2.0
+pip                26.1.1
+pluggy             1.6.0
+psycopg2-binary    2.9.12
+pyasn1             0.6.3
+pyasn1_modules     0.4.2
+pycparser          3.0
+pydantic           2.9.2
+pydantic_core      2.23.4
+Pygments           2.20.0
+PyMuPDF            1.24.9
+PyMuPDFb           1.24.9
+pypdfium2          5.8.0
+pytest             9.0.3
+pytest-asyncio     1.4.0
+python-dateutil    2.9.0.post0
+python-dotenv      1.0.1
+python-jose        3.5.0
+python-multipart   0.0.9
+PyYAML             6.0.3
+requests           2.34.2
+rsa                4.9.1
+ruff               0.15.15
+s3transfer         0.18.0
+six                1.17.0
+sniffio            1.3.1
+SQLAlchemy         2.0.35
+starlette          0.38.6
+tenacity           9.1.4
+typing_extensions  4.15.0
+typing-inspect     0.9.0
+urllib3            2.7.0
+uvicorn            0.30.6
+uvloop             0.22.1
+watchfiles         1.2.0
+websockets         16.0
