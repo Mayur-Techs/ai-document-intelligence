@@ -39,7 +39,10 @@ CONSECUTIVE_TIER1_FAILURES = 0
 GROQ_LOCK = asyncio.Lock()
 MISTRAL_LOCK = asyncio.Lock()
 GEMINI_LOCK = asyncio.Lock()
-EXTRACTION_SEMAPHORE = asyncio.Semaphore(3)
+
+# Thread-safe global async queue for serial processing
+DOCUMENT_QUEUE = asyncio.Queue()
+QUEUE_ACTIVE = False
 
 
 def _session() -> Session:
@@ -180,8 +183,32 @@ def _mark_failed(doc_id: int, reason: str) -> None:
 
 
 async def process_document(document_id: int) -> None:
-    async with EXTRACTION_SEMAPHORE:
+    if os.getenv("TESTING") == "true" or not QUEUE_ACTIVE:
+        # Run directly in tests and CLI so we don't have to manage background task workers in test suite/CLI
         await _process_document_impl(document_id)
+    else:
+        # Queue for single-worker serial processing in production
+        await DOCUMENT_QUEUE.put(document_id)
+        logger.info("[QUEUE] Document %d queued for serial extraction", document_id)
+
+
+async def document_worker() -> None:
+    """Dedicated background task runner that executes queued extractions one at a time."""
+    logger.info("[QUEUE] Single-worker background queue active.")
+    while True:
+        document_id = None
+        try:
+            document_id = await DOCUMENT_QUEUE.get()
+            logger.info("[QUEUE] Starting serial processing for doc id=%d", document_id)
+            await _process_document_impl(document_id)
+        except asyncio.CancelledError:
+            logger.info("[QUEUE] Single-worker background queue cancelled/shutting down.")
+            break
+        except Exception as e:
+            logger.error("[QUEUE] Critical failure on doc id=%s: %s", document_id, e)
+        finally:
+            if document_id is not None:
+                DOCUMENT_QUEUE.task_done()
 
 
 async def _process_document_impl(document_id: int) -> None:

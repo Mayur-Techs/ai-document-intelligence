@@ -6,6 +6,7 @@ resilience, threshold fallback behavior, and consecutive failure rate-limiting.
 from __future__ import annotations
 
 import asyncio
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -30,6 +31,8 @@ TestSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_eng
 def setup_db():
     Base.metadata.create_all(bind=test_engine)
     extractor.pipeline.CONSECUTIVE_TIER1_FAILURES = 0
+    extractor.pipeline.DOCUMENT_QUEUE = asyncio.Queue()
+    extractor.pipeline.QUEUE_ACTIVE = False
     yield
     Base.metadata.drop_all(bind=test_engine)
 
@@ -371,22 +374,46 @@ async def test_provider_busy_skips_to_next(mock_db_session, mock_resolve_path):
 
 
 @pytest.mark.asyncio
-async def test_concurrency_semaphore_limits_active_tasks(mock_db_session, mock_resolve_path):
-    active_tasks = 0
-    max_observed_active_tasks = 0
+async def test_serial_queue_execution(mock_db_session, mock_resolve_path):
+    # Enable queue processing and turn off TESTING env mode just for process_document queueing
+    extractor.pipeline.QUEUE_ACTIVE = True
+    with patch.dict(os.environ, {"TESTING": ""}):
+        processed_order = []
+        active_tasks = 0
+        max_active_tasks = 0
 
-    async def mock_impl(document_id):
-        nonlocal active_tasks, max_observed_active_tasks
-        active_tasks += 1
-        max_observed_active_tasks = max(max_observed_active_tasks, active_tasks)
-        await asyncio.sleep(0.1)
-        active_tasks -= 1
+        async def mock_impl(document_id):
+            nonlocal active_tasks, max_active_tasks
+            active_tasks += 1
+            max_active_tasks = max(max_active_tasks, active_tasks)
+            await asyncio.sleep(0.05)
+            processed_order.append(document_id)
+            active_tasks -= 1
 
-    # Patch the _process_document_impl to our mock
-    with patch("extractor.pipeline._process_document_impl", side_effect=mock_impl):
-        # Run 5 processing tasks concurrently
-        tasks = [process_document(i) for i in range(1, 6)]
-        await asyncio.gather(*tasks)
+        # Start the worker task
+        worker = asyncio.create_task(extractor.pipeline.document_worker())
 
-    # Check that at any point, the maximum active tasks did not exceed 3
-    assert max_observed_active_tasks == 3
+        try:
+            with patch("extractor.pipeline._process_document_impl", side_effect=mock_impl):
+                # Queue 5 documents
+                await process_document(1)
+                await process_document(2)
+                await process_document(3)
+                await process_document(4)
+                await process_document(5)
+
+                # Wait for the queue to be fully processed
+                await extractor.pipeline.DOCUMENT_QUEUE.join()
+        finally:
+            # Cancel the worker task
+            worker.cancel()
+            import contextlib
+
+            with contextlib.suppress(asyncio.CancelledError):
+                await worker
+            extractor.pipeline.QUEUE_ACTIVE = False
+
+        # Verify that max concurrency was exactly 1 (since it's a single worker thread/task)
+        assert max_active_tasks == 1
+        # Verify FIFO order
+        assert processed_order == [1, 2, 3, 4, 5]

@@ -11,6 +11,7 @@ Follows identical patterns to System 1 (lead-gen-automation):
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -18,6 +19,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+import extractor.pipeline
 from api.export import router as export_router
 from api.routes.documents import router as documents_router
 from auth.routes import router as auth_router
@@ -36,6 +38,12 @@ async def lifespan(app: FastAPI):  # type: ignore[type-arg]
     upload_dir = os.getenv("UPLOAD_DIR", "data/raw")
     os.makedirs(upload_dir, exist_ok=True)
     logger.info("API ready. Upload dir: %s | Docs: /docs", upload_dir)
+
+    # Initialize and start single-worker background queue task (only in production, not in tests)
+    if os.getenv("TESTING") != "true":
+        extractor.pipeline.QUEUE_ACTIVE = True
+        app.state.worker_task = asyncio.create_task(extractor.pipeline.document_worker())
+        logger.info("[QUEUE] Single-worker background queue worker started.")
 
     # Production readiness checks — warn loudly in logs if env vars are missing
     if not os.getenv("SMTP_HOST"):
@@ -58,6 +66,14 @@ async def lifespan(app: FastAPI):  # type: ignore[type-arg]
         )
 
     yield
+    # Clean up background worker task
+    if hasattr(app.state, "worker_task"):
+        logger.info("[QUEUE] Cancelling single-worker background queue worker task...")
+        app.state.worker_task.cancel()
+        try:
+            await app.state.worker_task
+        except asyncio.CancelledError:
+            logger.info("[QUEUE] Single-worker background queue worker task cancelled successfully.")
     logger.info("Shutting down AI Document Intelligence API.")
 
 
