@@ -59,6 +59,22 @@ from upload.handler import save_upload, validate_file
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
+_ALLOWED_CONTENT_TYPES = {"application/pdf"}
+_MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
+_PDF_MAGIC_BYTES = b"%PDF"
+
+
+def _verify_debug_secret(request: Request) -> None:
+    """Raise 403 if DEBUG_SECRET is set and header doesn't match."""
+    import os as _os
+
+    secret = _os.getenv("DEBUG_SECRET")
+    if not secret:
+        return  # No secret configured — debug endpoints open (dev only)
+    provided = request.headers.get("X-Debug-Secret", "")
+    if provided != secret:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
 
 # ── Pydantic schemas ───────────────────────────────────────────────────────────
 
@@ -179,6 +195,27 @@ async def upload_document(
     Poll GET /documents/{id}/status to check progress.
     Once status=completed, GET /documents/{id} returns extracted fields.
     """
+    if file.content_type not in _ALLOWED_CONTENT_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail="Only PDF files are accepted.",
+        )
+
+    pdf_bytes = await file.read()
+    await file.seek(0)
+
+    if len(pdf_bytes) > _MAX_FILE_SIZE_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail="File too large. Maximum allowed size is 10 MB.",
+        )
+
+    if not pdf_bytes.startswith(_PDF_MAGIC_BYTES):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid file. The uploaded file does not appear to be a valid PDF.",
+        )
+
     # Enforce rate limits
     ip = enforce_rate_limit(request, db, current_user)
 
@@ -234,6 +271,28 @@ async def batch_upload(
     """Upload multiple PDFs at once. Each processes independently."""
     results = []
     for file in files:
+        if file.content_type not in _ALLOWED_CONTENT_TYPES:
+            results.append({"file": file.filename, "error": "Only PDF files are accepted."})
+            continue
+
+        pdf_bytes = await file.read()
+        await file.seek(0)
+
+        if len(pdf_bytes) > _MAX_FILE_SIZE_BYTES:
+            results.append(
+                {"file": file.filename, "error": "File too large. Maximum allowed size is 10 MB."}
+            )
+            continue
+
+        if not pdf_bytes.startswith(_PDF_MAGIC_BYTES):
+            results.append(
+                {
+                    "file": file.filename,
+                    "error": "Invalid file. The uploaded file does not appear to be a valid PDF.",
+                }
+            )
+            continue
+
         validation = await validate_file(file)
         if not validation.valid:
             results.append({"file": file.filename, "error": validation.error})
@@ -617,13 +676,9 @@ def get_rate_limit_debug(
     db: Session = Depends(get_db_for_fastapi),
 ):
     """Get rate limit details for debugging. Protected by DEBUG_SECRET header."""
-    import os
+    _verify_debug_secret(request)
 
     from auth.rate_limit import IP_LIMIT, PLAN_LIMITS, get_client_ip
-
-    debug_secret = os.getenv("DEBUG_SECRET")
-    if debug_secret and request.headers.get("X-Debug-Secret") != debug_secret:
-        raise HTTPException(status_code=403, detail="Forbidden")
 
     ip = get_client_ip(request)
 
@@ -660,13 +715,9 @@ def reset_rate_limit_debug(
     db: Session = Depends(get_db_for_fastapi),
 ):
     """Reset rate limit for testing. Protected by DEBUG_SECRET header."""
-    import os
+    _verify_debug_secret(request)
 
     from auth.rate_limit import get_client_ip
-
-    debug_secret = os.getenv("DEBUG_SECRET")
-    if debug_secret and request.headers.get("X-Debug-Secret") != debug_secret:
-        raise HTTPException(status_code=403, detail="Forbidden")
 
     ip = get_client_ip(request)
 

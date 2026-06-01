@@ -1,18 +1,9 @@
 """
 extractor/groq_extractor.py
-────────────────────────────
-Fallback extraction using Groq (free tier, separate vendor from Cerebras).
-Only called when Cerebras confidence < 0.95 or a critical field is null.
 
-Free tier: 14,400 req/day on llama-3.3-70b-versatile
-Get key  : https://console.groq.com — no credit card needed
-Set in Render env: GROQ_API_KEY=your_key
-
-Fix history:
-  2026-06-01 — Replaced time.sleep() with await asyncio.sleep() throughout.
-               Blocking sleep in async pipeline freezes the entire event loop,
-               stalling all concurrent requests during Groq retries.
-               _call_groq and extract_fallback are now async.
+Primary AI extraction using Groq (llama-3.3-70b-versatile).
+Free tier: 14,400 requests/day.
+Uses AsyncGroq — truly non-blocking.
 """
 
 from __future__ import annotations
@@ -22,118 +13,71 @@ import json
 import logging
 import os
 
-from groq import Groq
+from groq import AsyncGroq
 
-from extractor.cerebras_extractor import extract_text_from_pdf  # shared, no duplication
 from extractor.extraction_prompts import INVOICE_SYSTEM_PROMPT, build_extraction_prompt
 from extractor.field_sanitizer import sanitize
+from extractor.pdf_reader import extract_text_from_pdf
 
 logger = logging.getLogger("docai.groq")
 
-PRIMARY_MODEL = "llama-3.3-70b-versatile"
-FALLBACK_MODEL = "llama-3.1-8b-instant"  # retained for config compatibility
+_MAX_RETRIES = 3
+_RETRY_DELAY = 2.0  # seconds between retries
 
 
-def _get_client() -> Groq:
+async def extract_primary(
+    pdf_bytes: bytes,
+    page_count: int = 1,
+    char_count: int = 0,
+) -> dict | None:
+    """
+    Primary extraction via Groq llama-3.3-70b-versatile.
+    Returns sanitized extraction dict or None on failure.
+    """
     key = os.getenv("GROQ_API_KEY")
     if not key:
-        raise OSError("GROQ_API_KEY not set. Free key at https://console.groq.com")
-    return Groq(api_key=key)
-
-
-async def _call_groq(
-    text: str,
-    model: str,
-    page_count: int,
-    char_count: int,
-    max_retries: int = 2,
-) -> dict | None:
-    if not text or len(text.strip()) < 50:
-        logger.error("[groq] Text too short (%d chars)", len(text))
+        logger.error("GROQ_API_KEY not set — skipping Groq extraction")
         return None
 
-    user_prompt = build_extraction_prompt(page_count, char_count)
-    messages = [
-        {"role": "system", "content": INVOICE_SYSTEM_PROMPT},
-        {
-            "role": "user",
-            "content": (f"{user_prompt}\n\nInvoice text extracted from PDF:\n\n{text[:12000]}"),
-        },
-    ]
+    text = extract_text_from_pdf(pdf_bytes)
+    if not text or len(text.strip()) < 50:
+        logger.error("PDF text too short for Groq extraction (got %d chars)", len(text))
+        return None
 
-    for attempt in range(1, max_retries + 2):
+    client = AsyncGroq(api_key=key)
+    user_prompt = build_extraction_prompt(page_count, len(text))
+
+    for attempt in range(1, _MAX_RETRIES + 1):
         try:
-            response = _get_client().chat.completions.create(
-                model=model,
-                messages=messages,
+            response = await client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {"role": "system", "content": INVOICE_SYSTEM_PROMPT},
+                    {"role": "user", "content": f"{user_prompt}\n\n{text[:12000]}"},
+                ],
                 temperature=0.0,
-                max_tokens=2048,
                 response_format={"type": "json_object"},
             )
-            raw = (response.choices[0].message.content or "").strip()
-            if not raw:
-                if attempt <= max_retries:
-                    await asyncio.sleep(2)
-                continue
-
+            raw = response.choices[0].message.content.strip()
             result = sanitize(json.loads(raw))
             logger.info(
-                "[groq/%s] OK — conf=%.2f  vendor=%s  invoice=%s  total=%s",
-                model,
+                "[groq] OK — conf=%.2f vendor=%s invoice=%s total=%s",
                 result.get("ai_confidence", 0),
                 result.get("vendor_name"),
                 result.get("invoice_number"),
                 result.get("total_amount"),
             )
             return result
+        except Exception as exc:
+            logger.error("[groq] Attempt %d/%d failed: %s", attempt, _MAX_RETRIES, exc)
+            if attempt < _MAX_RETRIES:
+                await asyncio.sleep(_RETRY_DELAY)
 
-        except json.JSONDecodeError as e:
-            logger.warning("[groq/%s] JSON error attempt %d: %s", model, attempt, e)
-            if attempt <= max_retries:
-                await asyncio.sleep(2)
-
-        except Exception as e:
-            err = str(e)
-
-            # Invalid key — fail immediately
-            if "401" in err or "invalid_api_key" in err.lower():
-                logger.error("[groq] Invalid API key — get free key at console.groq.com")
-                return None
-
-            # Rate limit: bypass immediately so the pipeline does not freeze.
-            if "429" in err or "rate" in err.lower():
-                logger.error(
-                    "[groq/%s] Rate limits hit. Bypassing fallback to avoid pipeline freeze.",
-                    model,
-                )
-                return None
-
-            logger.error("[groq/%s] Error attempt %d: %s", model, attempt, e)
-            if attempt <= max_retries:
-                await asyncio.sleep(2**attempt)
-
-    logger.error("[groq/%s] All attempts failed", model)
     return None
 
 
-# ─────────────────────────────────────────────────────────────
-#  Public API — called by pipeline.py
-# ─────────────────────────────────────────────────────────────
-
-
-async def extract_fallback(
-    pdf_bytes: bytes,
-    page_count: int = 1,
-    char_count: int = 0,
-) -> dict | None:
-    """Fallback: same pdfplumber text extraction → Groq llama-3.3-70b-versatile."""
-    logger.info("Fallback extraction → groq/%s", PRIMARY_MODEL)
-    text = extract_text_from_pdf(pdf_bytes)
-    return await _call_groq(text, PRIMARY_MODEL, page_count, len(text), max_retries=2)
-
-
 def needs_fallback(result: dict | None, threshold: float = 0.95) -> bool:
-    """Returns True if Cerebras result needs Groq to supplement it."""
+    """Returns True if Groq result needs Mistral fallback to supplement it."""
     if result is None:
         logger.info("Fallback needed: primary returned None")
         return True
@@ -145,3 +89,7 @@ def needs_fallback(result: dict | None, threshold: float = 0.95) -> bool:
     if low_conf:
         logger.info("Fallback needed: conf %.2f < %.2f", result.get("ai_confidence", 0), threshold)
     return bool(null_fields) or low_conf
+
+
+# Keep backward-compatible alias used by pipeline.py
+extract_fallback = extract_primary

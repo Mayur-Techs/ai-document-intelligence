@@ -1,4 +1,4 @@
-name: DocIntel CI/CD
+name: CI → Deploy → Smoke Test
 
 on:
   push:
@@ -8,26 +8,34 @@ on:
 
 jobs:
   test:
-    name: Test & Lint
+    name: Lint, Format, Test
     runs-on: ubuntu-latest
 
     services:
       postgres:
         image: postgres:15
         env:
-          POSTGRES_USER: docai
-          POSTGRES_PASSWORD: docai
-          POSTGRES_DB: docai_test
+          POSTGRES_USER: testuser
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_DB: testdb
+        ports:
+          - 5432:5432
         options: >-
           --health-cmd pg_isready
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-        ports:
-          - 5432:5432
+
+    env:
+      TESTING: "true"
+      DATABASE_URL: postgresql://testuser:testpass@localhost:5432/testdb
+      JWT_SECRET_KEY: test-secret-key-that-is-long-enough-for-testing-purposes
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+      DISABLE_RATE_LIMIT: "true"
 
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set up Python 3.12
@@ -39,27 +47,14 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Lint with ruff
+      - name: Ruff — lint check
         run: ruff check .
 
-      - name: Run tests
-        env:
-          DATABASE_URL: postgresql://docai:docai@localhost:5432/docai_test
-          JWT_SECRET_KEY: test-secret-key-not-for-production
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
-          TESTING: "true"
-        run: pytest tests/ -v --tb=short
+      - name: Ruff — format check
+        run: ruff format --check .
 
-      - name: Verify imports
-        env:
-          DATABASE_URL: postgresql://docai:docai@localhost:5432/docai_test
-          JWT_SECRET_KEY: test-secret-key
-        run: |
-          python -c "from database.models import User, Document, ExtractedField"
-          python -c "from auth.core import create_access_token, verify_password"
-          python -c "from extractor.pipeline import process_document"
-          echo "All imports OK"
+      - name: Run tests
+        run: pytest tests/ -v --tb=short
 
   deploy:
     name: Deploy to Render
@@ -68,18 +63,32 @@ jobs:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
 
     steps:
-      - name: Trigger Render Deploy
+      - name: Trigger Render deploy
         run: |
-          curl -X POST "${{ secrets.RENDER_DEPLOY_HOOK_URL }}" \
-            -H "Content-Type: application/json"
+          curl -s -X POST "${{ secrets.RENDER_DEPLOY_HOOK_URL }}" \
+            -H "Content-Type: application/json" | jq .
 
-      - name: Wait for deployment
-        run: sleep 30
+      - name: Wait for Render to start
+        run: sleep 60
 
-      - name: Health check
+      - name: Smoke test — health endpoint
         run: |
-          curl --fail --retry 5 --retry-delay 15 \
-            https://doc-intelligence-api-tubh.onrender.com/health
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            https://doc-intelligence-api-tubh.onrender.com/health)
+          echo "Health check HTTP status: $STATUS"
+          if [ "$STATUS" != "200" ]; then
+            echo "SMOKE TEST FAILED — production is not healthy after deploy"
+            exit 1
+          fi
+          echo "Smoke test PASSED — production is healthy"
 
-      - name: Notify on success
-        run: echo "Deployed successfully to Render"
+      - name: Smoke test — stats endpoint
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            https://doc-intelligence-api-tubh.onrender.com/api/v1/stats)
+          echo "Stats endpoint HTTP status: $STATUS"
+          if [ "$STATUS" != "200" ]; then
+            echo "STATS ENDPOINT FAILED"
+            exit 1
+          fi
+          echo "Stats endpoint OK"

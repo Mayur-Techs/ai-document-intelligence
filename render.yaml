@@ -1,32 +1,23 @@
 services:
   - type: web
     name: doc-intelligence-api
-    runtime: docker
-    dockerfilePath: ./Dockerfile
-    plan: free
-    healthCheckPath: /health
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT --workers 2 --timeout-keep-alive 65
     envVars:
-      - key: LOG_LEVEL
-        value: INFO
       - key: DISABLE_RATE_LIMIT
         value: "false"
+      - key: LOG_LEVEL
+        value: INFO
       - key: DEBUG_SECRET
-        sync: false
-      - key: RATE_LIMIT_WHITELISTED_IPS
-        value: ""
-      - key: UPLOAD_DIR
-        value: data/raw
-      - key: DATABASE_URL
-        fromDatabase:
-          name: doc-intelligence-db
-          property: connectionString
+        sync: false    # Set actual value in Render dashboard
       - key: JWT_SECRET_KEY
-        generateValue: true
-      - key: CEREBRAS_API_KEY
+        sync: false    # Set actual value in Render dashboard
+      - key: DATABASE_URL
         sync: false
       - key: GROQ_API_KEY
         sync: false
-      - key: GOOGLE_CLIENT_ID
+      - key: MISTRAL_API_KEY
         sync: false
       - key: AWS_ACCESS_KEY_ID
         sync: false
@@ -37,15 +28,15 @@ services:
       - key: AWS_S3_REGION_NAME
         value: ap-south-1
       - key: SMTP_HOST
-        sync: false
+        value: smtp.gmail.com
       - key: SMTP_PORT
         value: "587"
       - key: SMTP_USER
         sync: false
       - key: SMTP_PASSWORD
         sync: false
-      - key: FRONTEND_URL
-        value: https://aidocli.netlify.app
+      - key: GOOGLE_CLIENT_ID
+        sync: false
 
 databases:
   - name: doc-intelligence-db

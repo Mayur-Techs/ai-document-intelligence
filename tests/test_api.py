@@ -140,7 +140,7 @@ class TestUpload:
                 "/api/v1/documents/upload",
                 files={"file": ("photo.jpg", io.BytesIO(b"fake jpg"), "image/jpeg")},
             )
-        assert r.status_code == 422
+        assert r.status_code == 400
 
     def test_batch_upload_enforces_rate_limit_per_valid_file(self, client):
         with (

@@ -45,7 +45,7 @@ def mock_db_session():
 
 @pytest.fixture
 def mock_resolve_path():
-    with patch("extractor.pipeline._resolve_path") as mock_res:
+    with patch("extractor.pipeline.resolve_document_path") as mock_res:
         mock_path = MagicMock()
         mock_path.read_bytes.return_value = b"%PDF-1.4 mock pdf text"
         mock_res.return_value = mock_path
@@ -74,12 +74,12 @@ async def test_groq_high_confidence(mock_db_session, mock_resolve_path):
         "invoice_date": "2026-05-31",
         "total_amount": 100.0,
         "currency": "USD",
-        "ai_confidence": 0.92,
+        "ai_confidence": 0.96,
     }
 
     with (
-        patch("extractor.pipeline.extract_groq", return_value=groq_mock_result) as mock_groq,
-        patch("extractor.pipeline.extract_mistral") as mock_mistral,
+        patch("extractor.pipeline.groq_extract", return_value=groq_mock_result) as mock_groq,
+        patch("extractor.pipeline.mistral_extract") as mock_mistral,
         patch("extractor.pipeline.extract_gemini") as mock_gemini,
     ):
         await process_document(101)
@@ -93,7 +93,7 @@ async def test_groq_high_confidence(mock_db_session, mock_resolve_path):
     doc_after = db.query(Document).filter(Document.id == 101).first()
     assert doc_after.status == "completed"
     assert doc_after.vendor_name == "Groq Vendor"
-    assert doc_after.ai_confidence == 0.92
+    assert doc_after.ai_confidence == 0.96
     assert extractor.pipeline.CONSECUTIVE_TIER1_FAILURES == 0
     db.close()
 
@@ -131,9 +131,9 @@ async def test_groq_low_mistral_high(mock_db_session, mock_resolve_path):
     }
 
     with (
-        patch("extractor.pipeline.extract_groq", return_value=groq_mock_result) as mock_groq,
+        patch("extractor.pipeline.groq_extract", return_value=groq_mock_result) as mock_groq,
         patch(
-            "extractor.pipeline.extract_mistral", return_value=mistral_mock_result
+            "extractor.pipeline.mistral_extract", return_value=mistral_mock_result
         ) as mock_mistral,
         patch("extractor.pipeline.extract_gemini") as mock_gemini,
     ):
@@ -186,9 +186,9 @@ async def test_gemini_exception_ignored_retains_mistral(mock_db_session, mock_re
     }
 
     with (
-        patch("extractor.pipeline.extract_groq", return_value=groq_mock_result) as mock_groq,
+        patch("extractor.pipeline.groq_extract", return_value=groq_mock_result) as mock_groq,
         patch(
-            "extractor.pipeline.extract_mistral", return_value=mistral_mock_result
+            "extractor.pipeline.mistral_extract", return_value=mistral_mock_result
         ) as mock_mistral,
         patch(
             "extractor.pipeline.extract_gemini", side_effect=Exception("Gemini Rate Limit")
@@ -249,9 +249,9 @@ async def test_gemini_zero_confidence_ignored_retains_mistral(mock_db_session, m
     }
 
     with (
-        patch("extractor.pipeline.extract_groq", return_value=groq_mock_result) as mock_groq,
+        patch("extractor.pipeline.groq_extract", return_value=groq_mock_result) as mock_groq,
         patch(
-            "extractor.pipeline.extract_mistral", return_value=mistral_mock_result
+            "extractor.pipeline.mistral_extract", return_value=mistral_mock_result
         ) as mock_mistral,
         patch("extractor.pipeline.extract_gemini", return_value=gemini_mock_result) as mock_gemini,
     ):
@@ -296,8 +296,8 @@ async def test_consecutive_failures_sleep(mock_db_session, mock_resolve_path):
     }
 
     with (
-        patch("extractor.pipeline.extract_groq", return_value=groq_mock_result) as mock_groq,
-        patch("extractor.pipeline.extract_mistral") as mock_mistral,
+        patch("extractor.pipeline.groq_extract", return_value=groq_mock_result) as mock_groq,
+        patch("extractor.pipeline.mistral_extract") as mock_mistral,
         patch("extractor.pipeline.extract_gemini") as mock_gemini,
         patch("asyncio.sleep") as mock_sleep,
     ):
@@ -327,8 +327,8 @@ async def test_groq_failure_increments_counter(mock_db_session, mock_resolve_pat
     db.close()
 
     with (
-        patch("extractor.pipeline.extract_groq", side_effect=Exception("Groq error")),
-        patch("extractor.pipeline.extract_mistral", return_value=None),
+        patch("extractor.pipeline.groq_extract", side_effect=Exception("Groq error")),
+        patch("extractor.pipeline.mistral_extract", return_value=None),
         patch("extractor.pipeline.extract_gemini", return_value=None),
     ):
         await process_document(106)
@@ -367,8 +367,8 @@ async def test_provider_busy_skips_to_next(mock_db_session, mock_resolve_path):
 
     try:
         with (
-            patch("extractor.pipeline.extract_groq") as mock_groq,
-            patch("extractor.pipeline.extract_mistral") as mock_mistral,
+            patch("extractor.pipeline.groq_extract") as mock_groq,
+            patch("extractor.pipeline.mistral_extract") as mock_mistral,
             patch(
                 "extractor.pipeline.extract_gemini", return_value=gemini_mock_result
             ) as mock_gemini,

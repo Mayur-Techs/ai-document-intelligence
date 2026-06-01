@@ -27,6 +27,7 @@ This file does three things:
 
 from __future__ import annotations
 
+import logging
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -50,17 +51,17 @@ _INSECURE_DEFAULT = "change-this-in-production-use-a-long-random-string"
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", _INSECURE_DEFAULT)
 ALGORITHM = "HS256"  # HMAC SHA-256 — standard, fast, secure enough
 ACCESS_TOKEN_EXPIRE_HOURS = 24  # token valid for 24 hours
+_jwt_logger = logging.getLogger("docai.auth")
 
-# ── Security fail-fast ────────────────────────────────────────────────────────
-# If the app is running with the default insecure key outside of test/dev mode,
-# all JWTs are trivially forgeable. Fail loudly so the operator notices immediately.
-if SECRET_KEY == _INSECURE_DEFAULT and os.getenv("TESTING") != "true":
-    import logging as _logging
+_JWT_SECRET = os.getenv("JWT_SECRET_KEY", "")
+_INSECURE_DEFAULTS = {"secret", "changeme", "your-secret-key", "jwt-secret", ""}
 
-    _logging.getLogger("docai.auth").critical(
-        "SECURITY: JWT_SECRET_KEY is set to the insecure default value. "
-        'Generate a secure key with: python -c "import secrets; print(secrets.token_hex(32))" '
-        "and set it in your Render environment variables immediately."
+if os.getenv("TESTING", "false").lower() != "true" and (
+    not _JWT_SECRET or _JWT_SECRET.lower() in _INSECURE_DEFAULTS or len(_JWT_SECRET) < 32
+):
+    _jwt_logger.critical(
+        "CRITICAL SECURITY: JWT_SECRET_KEY is missing or insecure. "
+        'Generate a secure key: python -c "import secrets; print(secrets.token_hex(32))"'
     )
 
 # ─────────────────────────────────────────────────────────────

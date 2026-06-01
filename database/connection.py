@@ -23,8 +23,8 @@ engine = create_engine(
     DATABASE_URL,
     echo=False,
     pool_pre_ping=True,  # verify connection health before use
-    pool_size=5,
-    max_overflow=10,
+    pool_size=10,
+    max_overflow=20,
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -69,14 +69,13 @@ def init_db() -> None:
 
     # Ensure platform_stats row exists (upsert pattern used by the pipeline)
     try:
-        db.execute(
-            text(
-                "INSERT INTO platform_stats (id, total_documents, confidence_sum) "
-                "VALUES (1, 0, 0.0) ON CONFLICT (id) DO NOTHING"
-            )
-        )
-        db.commit()
-        logger.info("platform_stats row verified.")
+        from database.models import PlatformStats
+
+        stats = db.query(PlatformStats).filter(PlatformStats.id == 1).first()
+        if not stats:
+            db.add(PlatformStats(id=1, total_documents=0, confidence_sum=0.0))
+            db.commit()
+            logger.info("Platform stats row seeded")
     except Exception as e:
         db.rollback()
         logger.info("platform_stats seed skipped (table may not exist yet): %s", e)
