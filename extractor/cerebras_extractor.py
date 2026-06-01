@@ -52,11 +52,11 @@ LINE_ITEM_SCHEMA = {
     "type": "object",
     "properties": {
         "description": {"type": ["string", "null"]},
-        "hsn":         {"type": ["string", "null"]},
-        "quantity":    {"type": ["number", "null"]},
-        "unit":        {"type": ["string", "null"]},
-        "unit_price":  {"type": ["number", "null"]},
-        "amount":      {"type": ["number", "null"]},
+        "hsn": {"type": ["string", "null"]},
+        "quantity": {"type": ["number", "null"]},
+        "unit": {"type": ["string", "null"]},
+        "unit_price": {"type": ["number", "null"]},
+        "amount": {"type": ["number", "null"]},
     },
     "required": ["description", "hsn", "quantity", "unit", "unit_price", "amount"],
     "additionalProperties": False,
@@ -65,30 +65,42 @@ LINE_ITEM_SCHEMA = {
 INVOICE_JSON_SCHEMA = {
     "type": "object",
     "properties": {
-        "vendor_name":          {"type": ["string", "null"]},
-        "vendor_gstin":         {"type": ["string", "null"]},
-        "buyer_name":           {"type": ["string", "null"]},
-        "buyer_gstin":          {"type": ["string", "null"]},
-        "invoice_number":       {"type": ["string", "null"]},
-        "invoice_date":         {"type": ["string", "null"]},
-        "due_date":             {"type": ["string", "null"]},
-        "currency":             {"type": ["string", "null"]},
-        "subtotal":             {"type": ["number", "null"]},
-        "tax_amount":           {"type": ["number", "null"]},
-        "total_amount":         {"type": ["number", "null"]},
-        "bank_ifsc":            {"type": ["string", "null"]},
-        "bank_account_number":  {"type": ["string", "null"]},
-        "bank_name":            {"type": ["string", "null"]},
-        "line_items":           {"type": "array", "items": LINE_ITEM_SCHEMA},
-        "confidence":           {"type": "number"},
-        "confidence_reason":    {"type": ["string", "null"]},
+        "vendor_name": {"type": ["string", "null"]},
+        "vendor_gstin": {"type": ["string", "null"]},
+        "buyer_name": {"type": ["string", "null"]},
+        "buyer_gstin": {"type": ["string", "null"]},
+        "invoice_number": {"type": ["string", "null"]},
+        "invoice_date": {"type": ["string", "null"]},
+        "due_date": {"type": ["string", "null"]},
+        "currency": {"type": ["string", "null"]},
+        "subtotal": {"type": ["number", "null"]},
+        "tax_amount": {"type": ["number", "null"]},
+        "total_amount": {"type": ["number", "null"]},
+        "bank_ifsc": {"type": ["string", "null"]},
+        "bank_account_number": {"type": ["string", "null"]},
+        "bank_name": {"type": ["string", "null"]},
+        "line_items": {"type": "array", "items": LINE_ITEM_SCHEMA},
+        "confidence": {"type": "number"},
+        "confidence_reason": {"type": ["string", "null"]},
     },
     "required": [
-        "vendor_name", "vendor_gstin", "buyer_name", "buyer_gstin",
-        "invoice_number", "invoice_date", "due_date", "currency",
-        "subtotal", "tax_amount", "total_amount",
-        "bank_ifsc", "bank_account_number", "bank_name",
-        "line_items", "confidence", "confidence_reason",
+        "vendor_name",
+        "vendor_gstin",
+        "buyer_name",
+        "buyer_gstin",
+        "invoice_number",
+        "invoice_date",
+        "due_date",
+        "currency",
+        "subtotal",
+        "tax_amount",
+        "total_amount",
+        "bank_ifsc",
+        "bank_account_number",
+        "bank_name",
+        "line_items",
+        "confidence",
+        "confidence_reason",
     ],
     "additionalProperties": False,
 }
@@ -208,6 +220,7 @@ def _try_repair_json(raw: str) -> dict | None:
 
 def _get_client() -> Any:
     from cerebras.cloud.sdk import Cerebras
+
     key = os.getenv("CEREBRAS_API_KEY")
     if not key:
         raise OSError(
@@ -234,11 +247,7 @@ def _call_cerebras(
         {"role": "system", "content": INVOICE_SYSTEM_PROMPT},
         {
             "role": "user",
-            "content": (
-                f"{user_prompt}\n\n"
-                f"Invoice text extracted from PDF:\n\n"
-                f"{text[:12000]}"
-            ),
+            "content": (f"{user_prompt}\n\nInvoice text extracted from PDF:\n\n{text[:12000]}"),
         },
     ]
 
@@ -263,7 +272,7 @@ def _call_cerebras(
                     model=model,
                     messages=messages,
                     temperature=0.0,
-                    max_tokens=4096,   # raised from 2048 — line items need space
+                    max_tokens=4096,  # raised from 2048 — line items need space
                     response_format=response_format,
                 )
 
@@ -281,7 +290,8 @@ def _call_cerebras(
                 except json.JSONDecodeError as e:
                     logger.warning(
                         "[cerebras/%s] Unexpected JSON error (strict mode): %s — trying repair",
-                        model, e,
+                        model,
+                        e,
                     )
                     raw_data = _try_repair_json(raw)
                     if raw_data is None:
@@ -323,7 +333,7 @@ def _call_cerebras(
                 else:
                     logger.error("[cerebras/%s] Error attempt %d: %s", model, attempt, e)
                     if attempt <= max_retries:
-                        time.sleep(2 ** attempt)
+                        time.sleep(2**attempt)
 
     logger.error("[cerebras] All models and attempts failed")
     return None

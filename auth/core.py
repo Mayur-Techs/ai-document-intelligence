@@ -46,9 +46,22 @@ from database.models import User
 #  Generate one: python -c "import secrets; print(secrets.token_hex(32))"
 # ─────────────────────────────────────────────────────────────
 
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", "change-this-in-production-use-a-long-random-string")
+_INSECURE_DEFAULT = "change-this-in-production-use-a-long-random-string"
+SECRET_KEY = os.getenv("JWT_SECRET_KEY", _INSECURE_DEFAULT)
 ALGORITHM = "HS256"  # HMAC SHA-256 — standard, fast, secure enough
 ACCESS_TOKEN_EXPIRE_HOURS = 24  # token valid for 24 hours
+
+# ── Security fail-fast ────────────────────────────────────────────────────────
+# If the app is running with the default insecure key outside of test/dev mode,
+# all JWTs are trivially forgeable. Fail loudly so the operator notices immediately.
+if SECRET_KEY == _INSECURE_DEFAULT and os.getenv("TESTING") != "true":
+    import logging as _logging
+
+    _logging.getLogger("docai.auth").critical(
+        "SECURITY: JWT_SECRET_KEY is set to the insecure default value. "
+        'Generate a secure key with: python -c "import secrets; print(secrets.token_hex(32))" '
+        "and set it in your Render environment variables immediately."
+    )
 
 # ─────────────────────────────────────────────────────────────
 #  Password hashing

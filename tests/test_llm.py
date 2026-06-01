@@ -92,8 +92,9 @@ class TestExtractFields:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("processor.llm.httpx.AsyncClient", return_value=mock_client), patch(
-            "processor.llm.GEMINI_API_KEY", "test-key"
+        with (
+            patch("processor.llm.httpx.AsyncClient", return_value=mock_client),
+            patch("processor.llm.GEMINI_API_KEY", "test-key"),
         ):
             output = await extract_fields(sample_extracted_text, document_type="invoice")
 
@@ -125,8 +126,9 @@ class TestExtractFields:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("processor.llm.httpx.AsyncClient", return_value=mock_client), patch(
-            "processor.llm.GEMINI_API_KEY", "test-key"
+        with (
+            patch("processor.llm.httpx.AsyncClient", return_value=mock_client),
+            patch("processor.llm.GEMINI_API_KEY", "test-key"),
         ):
             output = await extract_fields(sample_extracted_text, document_type="invoice")
 
@@ -147,8 +149,9 @@ class TestExtractFields:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("processor.llm.httpx.AsyncClient", return_value=mock_client), patch(
-            "processor.llm.GEMINI_API_KEY", "test-key"
+        with (
+            patch("processor.llm.httpx.AsyncClient", return_value=mock_client),
+            patch("processor.llm.GEMINI_API_KEY", "test-key"),
         ):
             output = await extract_fields(sample_extracted_text, document_type="invoice")
 

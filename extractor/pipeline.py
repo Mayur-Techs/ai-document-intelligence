@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import os
+import threading
 import traceback
 from pathlib import Path
 
@@ -35,6 +36,7 @@ logger = logging.getLogger("docai.pipeline")
 
 CONFIDENCE_THRESHOLD = 0.90
 CONSECUTIVE_TIER1_FAILURES = 0
+_TIER1_FAILURE_LOCK = threading.Lock()
 
 GROQ_LOCK = asyncio.Lock()
 MISTRAL_LOCK = asyncio.Lock()
@@ -49,7 +51,12 @@ def _session() -> Session:
     return SessionLocal()
 
 
-def _resolve_path(doc) -> Path | None:
+def resolve_document_path(doc) -> Path | None:
+    """Resolve the local filesystem path for a document record.
+
+    Tries multiple candidate attributes and base directories so it works
+    both locally (no /app prefix) and inside the Docker container.
+    """
     for attr in ("file_path", "upload_path", "path", "file_name", "filename"):
         val = getattr(doc, attr, None)
         if not val:
@@ -64,6 +71,11 @@ def _resolve_path(doc) -> Path | None:
         if p.exists():
             return p
     return None
+
+
+# Keep the private alias so any code that imported `_resolve_path` directly
+# continues to work without a hard break while callers migrate.
+_resolve_path = resolve_document_path
 
 
 def _update_document(db: Session, doc_id: int, result: dict, status: str) -> None:
@@ -143,17 +155,12 @@ def _write_fields(db: Session, doc_id: int, result: dict) -> None:
 
 
 def _update_platform_stats(db: Session, confidence: float) -> None:
-    """Increment global counter and running confidence sum for the live stats widget."""
+    """Increment global counter and running confidence sum for the live stats widget.
+
+    The platform_stats table DDL is handled by init_db() at startup.
+    This function only performs the fast upsert — no DDL in the hot path.
+    """
     try:
-        db.execute(
-            text("""
-            CREATE TABLE IF NOT EXISTS platform_stats (
-                id               INTEGER PRIMARY KEY DEFAULT 1,
-                total_documents  INTEGER DEFAULT 0,
-                confidence_sum   FLOAT   DEFAULT 0.0
-            )
-        """)
-        )
         db.execute(
             text("""
             INSERT INTO platform_stats (id, total_documents, confidence_sum)
@@ -226,7 +233,7 @@ async def _process_document_impl(document_id: int) -> None:
         is_s3 = raw_file_path and raw_file_path.startswith("s3://")
 
         # Resolve local path if it is not S3
-        file_path = None if is_s3 else _resolve_path(doc)
+        file_path = None if is_s3 else resolve_document_path(doc)
 
         page_count = getattr(doc, "page_count", None) or 1
         char_count = getattr(doc, "char_count", None) or 0
@@ -264,7 +271,7 @@ async def _process_document_impl(document_id: int) -> None:
     providers = [
         {"name": "groq", "func": extract_groq},
         {"name": "mistral", "func": extract_mistral},
-        {"name": "gemini", "func": extract_gemini}
+        {"name": "gemini", "func": extract_gemini},
     ]
 
     attempt = 0
@@ -274,9 +281,13 @@ async def _process_document_impl(document_id: int) -> None:
     groq_called_in_task = False
     groq_succeeded_in_task = False
 
-    global CONSECUTIVE_TIER1_FAILURES
-    if CONSECUTIVE_TIER1_FAILURES > 0:
-        logger.info("Consecutive Tier 1 failures detected (%d). Sleeping 1s for quota reset...", CONSECUTIVE_TIER1_FAILURES)
+    with _TIER1_FAILURE_LOCK:
+        failures_snapshot = CONSECUTIVE_TIER1_FAILURES
+    if failures_snapshot > 0:
+        logger.info(
+            "Consecutive Tier 1 failures detected (%d). Sleeping 1s for quota reset...",
+            failures_snapshot,
+        )
         await asyncio.sleep(1)
 
     try:
@@ -311,7 +322,7 @@ async def _process_document_impl(document_id: int) -> None:
 
             should_break = False
             try:
-                res = func(pdf_bytes, page_count, char_count)
+                res = await func(pdf_bytes, page_count, char_count)
                 if res:
                     res = verify_extraction(res)
                     conf = res.get("ai_confidence", 0.0)
@@ -330,10 +341,20 @@ async def _process_document_impl(document_id: int) -> None:
                             groq_succeeded_in_task = True
                         # Check confidence threshold and missing critical fields
                         if not needs_fallback(res, threshold=CONFIDENCE_THRESHOLD):
-                            logger.info("Success with %s! Threshold met (conf=%.2f >= %.2f)", provider_name.upper(), conf, CONFIDENCE_THRESHOLD)
+                            logger.info(
+                                "Success with %s! Threshold met (conf=%.2f >= %.2f)",
+                                provider_name.upper(),
+                                conf,
+                                CONFIDENCE_THRESHOLD,
+                            )
                             should_break = True
                         else:
-                            logger.info("%s succeeded but confidence %.2f < %.2f or fields missing.", provider_name.upper(), conf, CONFIDENCE_THRESHOLD)
+                            logger.info(
+                                "%s succeeded but confidence %.2f < %.2f or fields missing.",
+                                provider_name.upper(),
+                                conf,
+                                CONFIDENCE_THRESHOLD,
+                            )
                     else:
                         logger.warning("%s returned 0.00 confidence.", provider_name.upper())
                 else:
@@ -359,10 +380,11 @@ async def _process_document_impl(document_id: int) -> None:
 
         # Track Tier 1 consecutive failures on Groq attempts across document tasks
         if groq_called_in_task:
-            if groq_succeeded_in_task:
-                CONSECUTIVE_TIER1_FAILURES = 0
-            else:
-                CONSECUTIVE_TIER1_FAILURES += 1
+            with _TIER1_FAILURE_LOCK:
+                if groq_succeeded_in_task:
+                    CONSECUTIVE_TIER1_FAILURES = 0
+                else:
+                    CONSECUTIVE_TIER1_FAILURES += 1
 
         # Consolidate candidate results to choose the best successful historical data
         final_result = None
@@ -370,7 +392,9 @@ async def _process_document_impl(document_id: int) -> None:
 
         if candidates:
             # Use the one with the highest confidence
-            best_candidate, provider_used = max(candidates, key=lambda c: c[0].get("ai_confidence", 0.0))
+            best_candidate, provider_used = max(
+                candidates, key=lambda c: c[0].get("ai_confidence", 0.0)
+            )
             final_result = best_candidate
 
             # Merge improvements from other successful candidates
@@ -384,7 +408,6 @@ async def _process_document_impl(document_id: int) -> None:
         logger.error("Extraction error: %s\n%s", e, traceback.format_exc())
         _mark_failed(document_id, str(e)[:400])
         return
-
 
     if final_result is None:
         _mark_failed(document_id, "All providers (Groq, Mistral, Gemini) returned no result")

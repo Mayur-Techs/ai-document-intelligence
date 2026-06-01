@@ -7,14 +7,19 @@ Called when Groq returns None or confidence < threshold.
 Free tier: mistral-small-latest via Mistral API
 Get key  : https://console.mistral.ai — no credit card needed
 Set in Render env: MISTRAL_API_KEY=your_key
+
+Fix history:
+  2026-06-01 — Replaced time.sleep() with await asyncio.sleep() throughout.
+               _call_mistral and extract_mistral are now async to avoid
+               blocking the event loop during retries.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
-import time
 
 try:
     from mistralai import Mistral
@@ -37,7 +42,7 @@ def _get_client() -> Mistral:
     return Mistral(api_key=key)
 
 
-def _call_mistral(
+async def _call_mistral(
     text: str,
     page_count: int,
     char_count: int,
@@ -52,11 +57,7 @@ def _call_mistral(
         {"role": "system", "content": INVOICE_SYSTEM_PROMPT},
         {
             "role": "user",
-            "content": (
-                f"{user_prompt}\n\n"
-                f"Invoice text extracted from PDF:\n\n"
-                f"{text[:12000]}"
-            ),
+            "content": (f"{user_prompt}\n\nInvoice text extracted from PDF:\n\n{text[:12000]}"),
         },
     ]
 
@@ -76,7 +77,7 @@ def _call_mistral(
             if not raw:
                 logger.warning("[mistral] Empty response attempt %d", attempt)
                 if attempt <= max_retries:
-                    time.sleep(2)
+                    await asyncio.sleep(2)
                 continue
 
             result = sanitize(json.loads(raw))
@@ -93,7 +94,7 @@ def _call_mistral(
         except json.JSONDecodeError as e:
             logger.warning("[mistral] JSON error attempt %d: %s", attempt, e)
             if attempt <= max_retries:
-                time.sleep(2)
+                await asyncio.sleep(2)
 
         except Exception as e:
             err = str(e)
@@ -105,9 +106,7 @@ def _call_mistral(
 
             # Rate limit — bypass immediately
             if "429" in err or "rate" in err.lower() or "too many" in err.lower():
-                logger.error(
-                    "[mistral] Rate limit hit. Bypassing to avoid pipeline freeze."
-                )
+                logger.error("[mistral] Rate limit hit. Bypassing to avoid pipeline freeze.")
                 return None
 
             # Model not available
@@ -117,7 +116,7 @@ def _call_mistral(
 
             logger.error("[mistral] Error attempt %d: %s", attempt, e)
             if attempt <= max_retries:
-                time.sleep(2**attempt)
+                await asyncio.sleep(2**attempt)
 
     logger.error("[mistral] All attempts failed")
     return None
@@ -128,7 +127,7 @@ def _call_mistral(
 # ─────────────────────────────────────────────────────────────
 
 
-def extract_mistral(
+async def extract_mistral(
     pdf_bytes: bytes,
     page_count: int = 1,
     char_count: int = 0,
@@ -136,4 +135,4 @@ def extract_mistral(
     """Second tier: pdfplumber text extraction → Mistral mistral-small-latest."""
     logger.info("Mistral extraction → %s", MODEL)
     text = extract_text_from_pdf(pdf_bytes)
-    return _call_mistral(text, page_count, len(text), max_retries=2)
+    return await _call_mistral(text, page_count, len(text), max_retries=2)

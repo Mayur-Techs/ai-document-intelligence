@@ -73,7 +73,9 @@ async def lifespan(app: FastAPI):  # type: ignore[type-arg]
         try:
             await app.state.worker_task
         except asyncio.CancelledError:
-            logger.info("[QUEUE] Single-worker background queue worker task cancelled successfully.")
+            logger.info(
+                "[QUEUE] Single-worker background queue worker task cancelled successfully."
+            )
     logger.info("Shutting down AI Document Intelligence API.")
 
 

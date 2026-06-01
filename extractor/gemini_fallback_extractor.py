@@ -9,14 +9,18 @@ Gemini handles PDF bytes natively — no pdfplumber needed here.
 Free tier: gemini-2.0-flash via Google AI Studio
 Get key  : https://aistudio.google.com/app/apikey — no credit card needed
 Set in Render env: GEMINI_API_KEY=your_key
+
+Fix history:
+  2026-06-01 — Replaced time.sleep() with await asyncio.sleep() throughout.
+               _call_gemini and extract_gemini are now async.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
-import time
 
 from google import genai
 from google.genai import types
@@ -36,7 +40,7 @@ def _get_client() -> genai.Client:
     return genai.Client(api_key=key)
 
 
-def _call_gemini(
+async def _call_gemini(
     pdf_bytes: bytes,
     page_count: int,
     char_count: int,
@@ -47,10 +51,7 @@ def _call_gemini(
         return None
 
     user_prompt = build_extraction_prompt(page_count, char_count)
-    full_prompt = (
-        f"{user_prompt}\n\n"
-        f"The PDF document is attached. Extract invoice data from it."
-    )
+    full_prompt = f"{user_prompt}\n\nThe PDF document is attached. Extract invoice data from it."
 
     # Build content parts: text prompt + inline PDF bytes
     pdf_part = types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf")
@@ -87,7 +88,7 @@ def _call_gemini(
             if not raw:
                 logger.warning("[gemini] Empty response attempt %d", attempt)
                 if attempt <= max_retries:
-                    time.sleep(2)
+                    await asyncio.sleep(2)
                 continue
 
             result = sanitize(json.loads(raw))
@@ -104,7 +105,7 @@ def _call_gemini(
         except json.JSONDecodeError as e:
             logger.warning("[gemini] JSON error attempt %d: %s", attempt, e)
             if attempt <= max_retries:
-                time.sleep(2)
+                await asyncio.sleep(2)
 
         except Exception as e:
             err = str(e)
@@ -126,7 +127,7 @@ def _call_gemini(
 
             logger.error("[gemini] Error attempt %d: %s", attempt, e)
             if attempt <= max_retries:
-                time.sleep(2**attempt)
+                await asyncio.sleep(2**attempt)
 
     logger.error("[gemini] All attempts failed")
     return None
@@ -137,11 +138,11 @@ def _call_gemini(
 # ─────────────────────────────────────────────────────────────
 
 
-def extract_gemini(
+async def extract_gemini(
     pdf_bytes: bytes,
     page_count: int = 1,
     char_count: int = 0,
 ) -> dict | None:
     """Final fallback: PDF bytes → Gemini 2.0 Flash (native PDF understanding)."""
     logger.info("Gemini fallback extraction → %s", MODEL)
-    return _call_gemini(pdf_bytes, page_count, char_count, max_retries=2)
+    return await _call_gemini(pdf_bytes, page_count, char_count, max_retries=2)

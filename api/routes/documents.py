@@ -54,7 +54,7 @@ from database.models import (
     User,
     UserPlan,
 )
-from extractor.pipeline import _resolve_path, process_document
+from extractor.pipeline import process_document, resolve_document_path
 from upload.handler import save_upload, validate_file
 
 router = APIRouter(prefix="/documents", tags=["documents"])
@@ -457,7 +457,7 @@ def download_document(
             raise HTTPException(status_code=404, detail=f"S3 download failed: {e}") from e
     else:
         # Local file
-        file_path = _resolve_path(doc)
+        file_path = resolve_document_path(doc)
         if not file_path or not file_path.exists():
             raise HTTPException(status_code=404, detail="File not found on local disk")
         return Response(
@@ -616,8 +616,14 @@ def get_rate_limit_debug(
     current_user: User | None = Depends(get_optional_user),
     db: Session = Depends(get_db_for_fastapi),
 ):
-    """Get rate limit details for debugging and troubleshooting."""
+    """Get rate limit details for debugging. Protected by DEBUG_SECRET header."""
+    import os
+
     from auth.rate_limit import IP_LIMIT, PLAN_LIMITS, get_client_ip
+
+    debug_secret = os.getenv("DEBUG_SECRET")
+    if debug_secret and request.headers.get("X-Debug-Secret") != debug_secret:
+        raise HTTPException(status_code=403, detail="Forbidden")
 
     ip = get_client_ip(request)
 
@@ -653,8 +659,14 @@ def reset_rate_limit_debug(
     current_user: User | None = Depends(get_optional_user),
     db: Session = Depends(get_db_for_fastapi),
 ):
-    """Reset rate limit usage for the caller's IP and account to allow testing."""
+    """Reset rate limit for testing. Protected by DEBUG_SECRET header."""
+    import os
+
     from auth.rate_limit import get_client_ip
+
+    debug_secret = os.getenv("DEBUG_SECRET")
+    if debug_secret and request.headers.get("X-Debug-Secret") != debug_secret:
+        raise HTTPException(status_code=403, detail="Forbidden")
 
     ip = get_client_ip(request)
 

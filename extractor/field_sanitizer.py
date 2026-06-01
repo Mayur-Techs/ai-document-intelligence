@@ -97,7 +97,7 @@ def clean_date(raw: Any) -> str | None:
         "%d-%m-%y",
     ):
         try:
-            return datetime.strptime(s, fmt).strftime("%-d %b %Y")
+            return datetime.strptime(s, fmt).strftime("%d %b %Y").lstrip("0")
         except ValueError:
             continue
     # Regex fallback

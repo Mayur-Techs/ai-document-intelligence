@@ -89,9 +89,11 @@ class TestHealth:
 # ── Upload ────────────────────────────────────────────────────────────────────
 class TestUpload:
     def test_upload_pdf_returns_202(self, client):
-        with patch("api.routes.documents.validate_file") as mock_val, patch(
-            "api.routes.documents.save_upload"
-        ) as mock_save, patch("api.routes.documents.process_document"):
+        with (
+            patch("api.routes.documents.validate_file") as mock_val,
+            patch("api.routes.documents.save_upload") as mock_save,
+            patch("api.routes.documents.process_document"),
+        ):
             mock_val.return_value = type(
                 "V",
                 (),
@@ -141,11 +143,12 @@ class TestUpload:
         assert r.status_code == 422
 
     def test_batch_upload_enforces_rate_limit_per_valid_file(self, client):
-        with patch("api.routes.documents.validate_file") as mock_val, patch(
-            "api.routes.documents.save_upload"
-        ) as mock_save, patch("api.routes.documents.process_document"), patch(
-            "api.routes.documents.enforce_rate_limit"
-        ) as mock_limit:
+        with (
+            patch("api.routes.documents.validate_file") as mock_val,
+            patch("api.routes.documents.save_upload") as mock_save,
+            patch("api.routes.documents.process_document"),
+            patch("api.routes.documents.enforce_rate_limit") as mock_limit,
+        ):
             mock_val.return_value = type(
                 "V",
                 (),

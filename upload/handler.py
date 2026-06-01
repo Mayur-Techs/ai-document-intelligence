@@ -67,14 +67,14 @@ def save_upload_bytes(file_bytes: bytes, original_filename: str) -> tuple[Path, 
     ext = Path(original_filename).suffix.lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise ValueError(
-            f"Unsupported file type: {ext!r}. " f"Supported: {', '.join(ALLOWED_EXTENSIONS)}"
+            f"Unsupported file type: {ext!r}. Supported: {', '.join(ALLOWED_EXTENSIONS)}"
         )
 
     # Validate by magic bytes — don't trust the extension alone
     mime = _detect_mime(file_bytes)
     if mime not in ALLOWED_MIME_TYPES:
         raise ValueError(
-            f"File content is {mime!r}, not a valid PDF. " "Ensure the file is not corrupted."
+            f"File content is {mime!r}, not a valid PDF. Ensure the file is not corrupted."
         )
 
     # Save with UUID filename — prevents collisions and path traversal

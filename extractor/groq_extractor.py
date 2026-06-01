@@ -7,14 +7,20 @@ Only called when Cerebras confidence < 0.95 or a critical field is null.
 Free tier: 14,400 req/day on llama-3.3-70b-versatile
 Get key  : https://console.groq.com — no credit card needed
 Set in Render env: GROQ_API_KEY=your_key
+
+Fix history:
+  2026-06-01 — Replaced time.sleep() with await asyncio.sleep() throughout.
+               Blocking sleep in async pipeline freezes the entire event loop,
+               stalling all concurrent requests during Groq retries.
+               _call_groq and extract_fallback are now async.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
-import time
 
 from groq import Groq
 
@@ -35,7 +41,7 @@ def _get_client() -> Groq:
     return Groq(api_key=key)
 
 
-def _call_groq(
+async def _call_groq(
     text: str,
     model: str,
     page_count: int,
@@ -51,9 +57,7 @@ def _call_groq(
         {"role": "system", "content": INVOICE_SYSTEM_PROMPT},
         {
             "role": "user",
-            "content": (
-                f"{user_prompt}\n\n" f"Invoice text extracted from PDF:\n\n" f"{text[:12000]}"
-            ),
+            "content": (f"{user_prompt}\n\nInvoice text extracted from PDF:\n\n{text[:12000]}"),
         },
     ]
 
@@ -69,7 +73,7 @@ def _call_groq(
             raw = (response.choices[0].message.content or "").strip()
             if not raw:
                 if attempt <= max_retries:
-                    time.sleep(2)
+                    await asyncio.sleep(2)
                 continue
 
             result = sanitize(json.loads(raw))
@@ -86,7 +90,7 @@ def _call_groq(
         except json.JSONDecodeError as e:
             logger.warning("[groq/%s] JSON error attempt %d: %s", model, attempt, e)
             if attempt <= max_retries:
-                time.sleep(2)
+                await asyncio.sleep(2)
 
         except Exception as e:
             err = str(e)
@@ -104,10 +108,9 @@ def _call_groq(
                 )
                 return None
 
-            else:
-                logger.error("[groq/%s] Error attempt %d: %s", model, attempt, e)
-                if attempt <= max_retries:
-                    time.sleep(2**attempt)
+            logger.error("[groq/%s] Error attempt %d: %s", model, attempt, e)
+            if attempt <= max_retries:
+                await asyncio.sleep(2**attempt)
 
     logger.error("[groq/%s] All attempts failed", model)
     return None
@@ -118,7 +121,7 @@ def _call_groq(
 # ─────────────────────────────────────────────────────────────
 
 
-def extract_fallback(
+async def extract_fallback(
     pdf_bytes: bytes,
     page_count: int = 1,
     char_count: int = 0,
@@ -126,7 +129,7 @@ def extract_fallback(
     """Fallback: same pdfplumber text extraction → Groq llama-3.3-70b-versatile."""
     logger.info("Fallback extraction → groq/%s", PRIMARY_MODEL)
     text = extract_text_from_pdf(pdf_bytes)
-    return _call_groq(text, PRIMARY_MODEL, page_count, len(text), max_retries=2)
+    return await _call_groq(text, PRIMARY_MODEL, page_count, len(text), max_retries=2)
 
 
 def needs_fallback(result: dict | None, threshold: float = 0.95) -> bool:

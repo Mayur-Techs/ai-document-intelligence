@@ -33,7 +33,7 @@ logger = logging.getLogger("docai.processor.llm")
 GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("EXTRACTION_MODEL", "gemini-1.5-flash")
 GEMINI_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/" "{model}:generateContent?key={key}"
+    "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
 )
 
 

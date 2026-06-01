@@ -19,12 +19,6 @@ import contextlib
 import csv
 import io
 import json
-import os
-import smtplib
-from email import encoders
-from email.mime.base import MIMEBase
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 
 import openpyxl
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -37,6 +31,7 @@ from sqlalchemy.orm import Session
 from auth.core import get_optional_user
 from database.connection import get_db_for_fastapi
 from database.models import Document, ExtractedField, User
+from utils.email import is_email_configured, send_email
 
 router = APIRouter(tags=["export"])
 
@@ -310,12 +305,7 @@ def export_email(
         SMTP_USER     your sending email address
         SMTP_PASSWORD your app password (Gmail: create at myaccount.google.com/apppasswords)
     """
-    smtp_host = os.getenv("SMTP_HOST")
-    smtp_port = int(os.getenv("SMTP_PORT", "587"))
-    smtp_user = os.getenv("SMTP_USER")
-    smtp_pass = os.getenv("SMTP_PASSWORD")
-
-    if not all([smtp_host, smtp_user, smtp_pass]):
+    if not is_email_configured():
         raise HTTPException(
             status_code=503,
             detail=(
@@ -330,38 +320,29 @@ def export_email(
     xlsx_bytes = _build_excel(doc, scalars, line_items)
     filename = f"invoice_{doc.invoice_number or doc_id}.xlsx".replace("/", "-")
 
-    # Build email
-    msg = MIMEMultipart()
-    msg["From"] = smtp_user
-    msg["To"] = to
-    msg["Subject"] = f"Invoice Data — {doc.invoice_number or f'Document #{doc_id}'}"
-    msg["X-Priority"] = "3"
-
-    body = MIMEText(
+    body_text = (
         f"Please find the extracted invoice data attached.\n\n"
         f"Vendor:  {scalars.get('vendor_name', 'N/A')}\n"
         f"Invoice: {scalars.get('invoice_number', 'N/A')}\n"
         f"Date:    {scalars.get('invoice_date', 'N/A')}\n"
         f"Total:   {scalars.get('currency', 'INR')} {scalars.get('total_amount', 'N/A')}\n\n"
         f"AI Confidence: {doc.ai_confidence:.0%}\n\n"
-        f"Extracted by AI Document Intelligence.",
-        "plain",
+        f"Extracted by AI Document Intelligence."
     )
-    msg.attach(body)
 
-    attachment = MIMEBase("application", "octet-stream")
-    attachment.set_payload(xlsx_bytes)
-    encoders.encode_base64(attachment)
-    attachment.add_header("Content-Disposition", f'attachment; filename="{filename}"')
-    msg.attach(attachment)
-
-    try:
-        with smtplib.SMTP(smtp_host, smtp_port) as server:
-            server.starttls()
-            server.login(smtp_user, smtp_pass)
-            server.sendmail(smtp_user, to, msg.as_string())
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Email send failed: {e}") from e
+    sent = send_email(
+        to=to,
+        subject=f"Invoice Data — {doc.invoice_number or f'Document #{doc_id}'}",
+        body=body_text,
+        attachment_bytes=xlsx_bytes,
+        attachment_filename=filename,
+        attachment_content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    if not sent:
+        raise HTTPException(
+            status_code=500,
+            detail="Email send failed. Check SMTP configuration in Render environment variables.",
+        )
 
     return {"success": True, "sent_to": to, "filename": filename}
 

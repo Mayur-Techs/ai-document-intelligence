@@ -15,11 +15,10 @@ How to register this in api/main.py:
 
 from __future__ import annotations
 
+import hashlib
 import os
-import smtplib
+import secrets
 from datetime import datetime, timedelta, timezone
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from google.auth.transport import requests as google_requests
@@ -37,6 +36,7 @@ from auth.core import (
 from database.connection import get_db_for_fastapi
 from database.models import Session as DBSession
 from database.models import User, UserPlan
+from utils.email import is_email_configured, send_email
 
 router = APIRouter()
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
@@ -164,21 +164,11 @@ def register(
     db.commit()
 
     # Send verification email if SMTP configured (non-blocking — registration succeeds either way)
-    smtp_host = os.getenv("SMTP_HOST")
-    smtp_port_raw = os.getenv("SMTP_PORT", "587")
-    smtp_port = int(smtp_port_raw) if smtp_port_raw and smtp_port_raw.isdigit() else 587
-    smtp_user = os.getenv("SMTP_USER")
-    smtp_pass = os.getenv("SMTP_PASSWORD")
-    frontend_url = os.getenv("FRONTEND_URL", "https://your-app.netlify.app")
-
-    if smtp_host and smtp_user and smtp_pass:
+    if is_email_configured():
+        frontend_url = os.getenv("FRONTEND_URL", "https://your-app.netlify.app")
         verify_link = (
             f"{frontend_url}/verify-email.html?token={verification_token}&email={body.email}"
         )
-        msg = MIMEMultipart()
-        msg["From"] = smtp_user
-        msg["To"] = body.email
-        msg["Subject"] = "Verify your AI Document Intelligence account"
         body_text = (
             f"Welcome to AI Document Intelligence!\n\n"
             f"Please verify your email address by clicking the link below:\n\n"
@@ -186,14 +176,11 @@ def register(
             f"This link does not expire.\n\n"
             f"— AI Document Intelligence"
         )
-        msg.attach(MIMEText(body_text, "plain"))
-        try:
-            with smtplib.SMTP(smtp_host, smtp_port) as server:
-                server.starttls()
-                server.login(smtp_user, smtp_pass)
-                server.sendmail(smtp_user, body.email, msg.as_string())
-        except Exception:
-            pass  # Don't block registration if email fails
+        send_email(
+            to=body.email,
+            subject="Verify your AI Document Intelligence account",
+            body=body_text,
+        )
 
     _set_auth_cookie(response, token)
 
@@ -351,9 +338,6 @@ def forgot_password(body: ForgotPasswordRequest, db: Session = Depends(get_db_fo
     Always returns 200 — never reveals whether the email is registered.
     If SMTP is configured, the user receives a reset link valid for 1 hour.
     """
-    import hashlib
-    import secrets
-
     # Always respond 200 to prevent account enumeration
     user = db.query(User).filter(User.email == body.email.lower()).first()
 
@@ -368,19 +352,9 @@ def forgot_password(body: ForgotPasswordRequest, db: Session = Depends(get_db_fo
         db.commit()
 
         # Send reset email if SMTP configured
-        smtp_host = os.getenv("SMTP_HOST")
-        smtp_port_raw = os.getenv("SMTP_PORT", "587")
-        smtp_port = int(smtp_port_raw) if smtp_port_raw and smtp_port_raw.isdigit() else 587
-        smtp_user = os.getenv("SMTP_USER")
-        smtp_pass = os.getenv("SMTP_PASSWORD")
-        frontend_url = os.getenv("FRONTEND_URL", "https://your-app.netlify.app")
-
-        if smtp_host and smtp_user and smtp_pass:
+        if is_email_configured():
+            frontend_url = os.getenv("FRONTEND_URL", "https://your-app.netlify.app")
             reset_link = f"{frontend_url}/reset-password.html?token={raw_token}&email={body.email}"
-            msg = MIMEMultipart()
-            msg["From"] = smtp_user
-            msg["To"] = body.email
-            msg["Subject"] = "Reset your AI Document Intelligence password"
             body_text = (
                 f"You requested a password reset.\n\n"
                 f"Click the link below to reset your password (valid for 1 hour):\n\n"
@@ -388,14 +362,11 @@ def forgot_password(body: ForgotPasswordRequest, db: Session = Depends(get_db_fo
                 f"If you didn't request this, you can safely ignore this email.\n\n"
                 f"— AI Document Intelligence"
             )
-            msg.attach(MIMEText(body_text, "plain"))
-            try:
-                with smtplib.SMTP(smtp_host, smtp_port) as server:
-                    server.starttls()
-                    server.login(smtp_user, smtp_pass)
-                    server.sendmail(smtp_user, body.email, msg.as_string())
-            except Exception:
-                pass  # Don't leak SMTP errors to the user
+            send_email(
+                to=body.email,
+                subject="Reset your AI Document Intelligence password",
+                body=body_text,
+            )
 
     return {"message": "If that email is registered, a reset link has been sent."}
 
@@ -425,7 +396,6 @@ def reset_password(body: ResetPasswordRequest, db: Session = Depends(get_db_for_
     Reset the password using the one-time token from the email link.
     Token is valid for 1 hour and can only be used once.
     """
-    import hashlib
 
     invalid = HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST,

@@ -67,6 +67,20 @@ def init_db() -> None:
             db.rollback()
             logger.warning("Could not check/add column %s.%s: %s", table, column, e)
 
+    # Ensure platform_stats row exists (upsert pattern used by the pipeline)
+    try:
+        db.execute(
+            text(
+                "INSERT INTO platform_stats (id, total_documents, confidence_sum) "
+                "VALUES (1, 0, 0.0) ON CONFLICT (id) DO NOTHING"
+            )
+        )
+        db.commit()
+        logger.info("platform_stats row verified.")
+    except Exception as e:
+        db.rollback()
+        logger.info("platform_stats seed skipped (table may not exist yet): %s", e)
+
     # 2. Try to add foreign key constraint in a separate transaction
     try:
         db.execute(

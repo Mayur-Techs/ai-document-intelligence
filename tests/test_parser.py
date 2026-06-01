@@ -97,9 +97,10 @@ class TestExtractText:
         pdf_file = tmp_path / "scanned.pdf"
         pdf_file.write_bytes(sample_pdf_bytes)
 
-        with patch("parser.extractor.pdfplumber") as mock_plumber, patch(
-            "parser.extractor.fitz"
-        ) as mock_fitz:
+        with (
+            patch("parser.extractor.pdfplumber") as mock_plumber,
+            patch("parser.extractor.fitz") as mock_fitz,
+        ):
             mock_plumber.open.return_value = _make_plumber_mock("")  # empty
             mock_fitz.open.return_value = _make_fitz_mock("")  # also empty
             result = extract_text(str(pdf_file))
@@ -114,9 +115,10 @@ class TestExtractText:
         pdf_file = tmp_path / "fallback.pdf"
         pdf_file.write_bytes(sample_pdf_bytes)
 
-        with patch("parser.extractor.pdfplumber") as mock_plumber, patch(
-            "parser.extractor.fitz"
-        ) as mock_fitz:
+        with (
+            patch("parser.extractor.pdfplumber") as mock_plumber,
+            patch("parser.extractor.fitz") as mock_fitz,
+        ):
             mock_plumber.open.side_effect = Exception("pdfplumber failed")
             mock_fitz.open.return_value = _make_fitz_mock(REALISTIC_TEXT)
             result = extract_text(str(pdf_file))
@@ -129,9 +131,10 @@ class TestExtractText:
         pdf_file = tmp_path / "broken.pdf"
         pdf_file.write_bytes(sample_pdf_bytes)
 
-        with patch("parser.extractor.pdfplumber") as mock_plumber, patch(
-            "parser.extractor.fitz"
-        ) as mock_fitz:
+        with (
+            patch("parser.extractor.pdfplumber") as mock_plumber,
+            patch("parser.extractor.fitz") as mock_fitz,
+        ):
             mock_plumber.open.side_effect = Exception("corrupt PDF header")
             mock_fitz.open.side_effect = Exception("cannot repair")
             result = extract_text(str(pdf_file))
