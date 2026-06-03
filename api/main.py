@@ -11,7 +11,6 @@ Follows identical patterns to System 1 (lead-gen-automation):
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -39,11 +38,9 @@ async def lifespan(app: FastAPI):  # type: ignore[type-arg]
     os.makedirs(upload_dir, exist_ok=True)
     logger.info("API ready. Upload dir: %s | Docs: /docs", upload_dir)
 
-    # Initialize and start single-worker background queue task (only in production, not in tests)
+    # Initialize and start single-worker background queue thread (only in production, not in tests)
     if os.getenv("TESTING") != "true":
-        extractor.pipeline.QUEUE_ACTIVE = True
-        app.state.worker_task = asyncio.create_task(extractor.pipeline.document_worker())
-        logger.info("[QUEUE] Single-worker background queue worker started.")
+        extractor.pipeline.start_worker_thread()
 
     # Production readiness checks — warn loudly in logs if env vars are missing
     if not os.getenv("SMTP_HOST"):
@@ -66,16 +63,13 @@ async def lifespan(app: FastAPI):  # type: ignore[type-arg]
         )
 
     yield
-    # Clean up background worker task
-    if hasattr(app.state, "worker_task"):
-        logger.info("[QUEUE] Cancelling single-worker background queue worker task...")
-        app.state.worker_task.cancel()
-        try:
-            await app.state.worker_task
-        except asyncio.CancelledError:
-            logger.info(
-                "[QUEUE] Single-worker background queue worker task cancelled successfully."
-            )
+    # Clean up background worker thread
+    if os.getenv("TESTING") != "true":
+        logger.info("[QUEUE] Stopping single-worker background queue worker thread...")
+        extractor.pipeline.DOCUMENT_QUEUE.put(None)
+        if extractor.pipeline._WORKER_THREAD:
+            extractor.pipeline._WORKER_THREAD.join(timeout=2.0)
+        logger.info("[QUEUE] Single-worker background queue worker thread stopped.")
     logger.info("Shutting down AI Document Intelligence API.")
 
 

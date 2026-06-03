@@ -22,7 +22,10 @@ from __future__ import annotations
 import contextlib
 import csv
 import io
+import os
+import shutil
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from fastapi import (
@@ -55,7 +58,7 @@ from database.models import (
     UserPlan,
 )
 from extractor.pipeline import process_document, resolve_document_path
-from upload.handler import save_upload, validate_file
+from upload.handler import save_upload, validate_file  # noqa: F401
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -195,22 +198,31 @@ async def upload_document(
     Poll GET /documents/{id}/status to check progress.
     Once status=completed, GET /documents/{id} returns extracted fields.
     """
+    import logging
+
+    logger = logging.getLogger("docai.api.documents")
+
     if file.content_type not in _ALLOWED_CONTENT_TYPES:
         raise HTTPException(
             status_code=400,
             detail="Only PDF files are accepted.",
         )
 
-    pdf_bytes = await file.read()
-    await file.seek(0)
+    # Memory-safe size retrieval
+    file.file.seek(0, 2)
+    file_size = file.file.tell()
+    file.file.seek(0)
 
-    if len(pdf_bytes) > _MAX_FILE_SIZE_BYTES:
+    if file_size > _MAX_FILE_SIZE_BYTES:
         raise HTTPException(
             status_code=413,
             detail="File too large. Maximum allowed size is 10 MB.",
         )
 
-    if not pdf_bytes.startswith(_PDF_MAGIC_BYTES):
+    # Memory-safe magic bytes check
+    magic_bytes = file.file.read(4)
+    file.file.seek(0)
+    if not magic_bytes.startswith(_PDF_MAGIC_BYTES):
         raise HTTPException(
             status_code=400,
             detail="Invalid file. The uploaded file does not appear to be a valid PDF.",
@@ -218,14 +230,6 @@ async def upload_document(
 
     # Enforce rate limits
     ip = enforce_rate_limit(request, db, current_user)
-
-    # Validate before touching DB
-    validation = await validate_file(file)
-    if not validation.valid:
-        raise HTTPException(status_code=422, detail=validation.error)
-
-    # Save to S3 or disk
-    saved = await save_upload(file, validation)
 
     # Resolve document type
     try:
@@ -235,15 +239,51 @@ async def upload_document(
 
     # Create DB record with owner mapping
     doc = Document(
-        file_name=validation.original_name,
-        file_path=str(saved.path),
-        file_size_bytes=saved.size_bytes,
+        file_name=file.filename or "unknown.pdf",
+        file_path="",  # temporary placeholder
+        file_size_bytes=file_size,
         document_type=doc_type.value,
         status=ProcessingStatus.QUEUED.value,
         user_id=current_user.id if current_user else None,
         ip_address=ip if not current_user else None,
     )
     db.add(doc)
+    db.commit()
+    db.refresh(doc)
+
+    # Stream file to disk under unique doc.id
+    upload_dir = Path(os.getenv("UPLOAD_DIR", "data/raw"))
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    stored_name = f"{doc.id}.pdf"
+    stored_path = upload_dir / stored_name
+
+    with open(stored_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    logger.info("Saved local: %s → %s (%d bytes)", doc.file_name, stored_path, file_size)
+
+    # Handle S3 storage wrapper if enabled
+    final_path = str(stored_path)
+    from utils.s3 import is_s3_enabled, upload_file_from_disk
+
+    if is_s3_enabled():
+        try:
+            s3_uri = upload_file_from_disk(
+                str(stored_path), stored_name, content_type="application/pdf"
+            )
+            if s3_uri:
+                final_path = s3_uri
+                logger.info(
+                    "Saved upload to S3: %s -> %s (%d bytes)",
+                    doc.file_name,
+                    final_path,
+                    file_size,
+                )
+        except Exception as s3_err:
+            logger.warning("S3 upload failed, falling back to local storage: %s", s3_err)
+
+    # Update DB record with the final file path
+    doc.file_path = final_path
     db.commit()
     db.refresh(doc)
 
@@ -269,22 +309,31 @@ async def batch_upload(
     db: Session = Depends(get_db_for_fastapi),
 ) -> dict[str, Any]:
     """Upload multiple PDFs at once. Each processes independently."""
+    import logging
+
+    logger = logging.getLogger("docai.api.documents")
     results = []
+
     for file in files:
         if file.content_type not in _ALLOWED_CONTENT_TYPES:
             results.append({"file": file.filename, "error": "Only PDF files are accepted."})
             continue
 
-        pdf_bytes = await file.read()
-        await file.seek(0)
+        # Memory-safe size retrieval
+        file.file.seek(0, 2)
+        file_size = file.file.tell()
+        file.file.seek(0)
 
-        if len(pdf_bytes) > _MAX_FILE_SIZE_BYTES:
+        if file_size > _MAX_FILE_SIZE_BYTES:
             results.append(
                 {"file": file.filename, "error": "File too large. Maximum allowed size is 10 MB."}
             )
             continue
 
-        if not pdf_bytes.startswith(_PDF_MAGIC_BYTES):
+        # Memory-safe magic bytes check
+        magic_bytes = file.file.read(4)
+        file.file.seek(0)
+        if not magic_bytes.startswith(_PDF_MAGIC_BYTES):
             results.append(
                 {
                     "file": file.filename,
@@ -293,22 +342,18 @@ async def batch_upload(
             )
             continue
 
-        validation = await validate_file(file)
-        if not validation.valid:
-            results.append({"file": file.filename, "error": validation.error})
-            continue
-
         ip = enforce_rate_limit(request, db, current_user)
-        saved = await save_upload(file, validation)
+
         try:
             doc_type = DocumentType(document_type.lower())
         except ValueError:
             doc_type = DocumentType.OTHER
 
+        # Create DB record with owner mapping
         doc = Document(
-            file_name=validation.original_name,
-            file_path=str(saved.path),
-            file_size_bytes=saved.size_bytes,
+            file_name=file.filename or "unknown.pdf",
+            file_path="",  # temporary placeholder
+            file_size_bytes=file_size,
             document_type=doc_type.value,
             status=ProcessingStatus.QUEUED.value,
             user_id=current_user.id if current_user else None,
@@ -317,6 +362,44 @@ async def batch_upload(
         db.add(doc)
         db.commit()
         db.refresh(doc)
+
+        # Stream file to disk under unique doc.id
+        upload_dir = Path(os.getenv("UPLOAD_DIR", "data/raw"))
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        stored_name = f"{doc.id}.pdf"
+        stored_path = upload_dir / stored_name
+
+        with open(stored_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+        logger.info("Saved local: %s → %s (%d bytes)", doc.file_name, stored_path, file_size)
+
+        # Handle S3 storage wrapper if enabled
+        final_path = str(stored_path)
+        from utils.s3 import is_s3_enabled, upload_file_from_disk
+
+        if is_s3_enabled():
+            try:
+                s3_uri = upload_file_from_disk(
+                    str(stored_path), stored_name, content_type="application/pdf"
+                )
+                if s3_uri:
+                    final_path = s3_uri
+                    logger.info(
+                        "Saved upload to S3: %s -> %s (%d bytes)",
+                        doc.file_name,
+                        final_path,
+                        file_size,
+                    )
+            except Exception as s3_err:
+                logger.warning("S3 upload failed, falling back to local storage: %s", s3_err)
+
+        # Update DB record with the final file path
+        doc.file_path = final_path
+        db.commit()
+        db.refresh(doc)
+
+        # Trigger async extraction pipeline
         background_tasks.add_task(process_document, doc.id)
         results.append({"document_id": doc.id, "file": doc.file_name, "status": "queued"})
 

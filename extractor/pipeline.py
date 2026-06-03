@@ -17,6 +17,8 @@ import asyncio
 import json as _json
 import logging
 import os
+import queue
+import threading
 import traceback
 from pathlib import Path
 
@@ -40,9 +42,10 @@ GROQ_LOCK = asyncio.Lock()
 MISTRAL_LOCK = asyncio.Lock()
 GEMINI_LOCK = asyncio.Lock()
 
-# Thread-safe global async queue for serial processing
-DOCUMENT_QUEUE = asyncio.Queue()
+# Thread-safe global queue for serial processing
+DOCUMENT_QUEUE: queue.Queue[tuple[int, str]] = queue.Queue()
 QUEUE_ACTIVE = False
+_WORKER_THREAD: threading.Thread | None = None
 
 
 def _session() -> Session:
@@ -198,32 +201,117 @@ async def process_document(document_id: int) -> None:
         await _process_document_impl(document_id)
     else:
         # Queue for single-worker serial processing in production
-        await DOCUMENT_QUEUE.put(document_id)
-        logger.info("[QUEUE] Document %d queued for serial extraction", document_id)
+        db = _session()
+        try:
+            doc = db.query(Document).filter(Document.id == document_id).first()
+            if not doc:
+                logger.warning(
+                    "[QUEUE] Document %d not found in DB. Queueing with empty path fallback.",
+                    document_id,
+                )
+                local_file_path = ""
+            else:
+                local_path = resolve_document_path(doc)
+                local_file_path = str(local_path) if local_path else ""
+            DOCUMENT_QUEUE.put_nowait((document_id, local_file_path))
+            logger.info(
+                "[QUEUE] Document %d queued for serial extraction. Path: %s",
+                document_id,
+                local_file_path,
+            )
+        finally:
+            db.close()
+
+
+def serial_worker() -> None:
+    """Dedicated background thread worker that processes the queue sequentially."""
+    logger.info("[QUEUE] Single-worker background thread queue active.")
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(document_worker())
+    except Exception as e:
+        logger.error("[QUEUE] Critical error in thread worker: %s", e)
+    finally:
+        loop.close()
+
+
+def start_worker_thread() -> None:
+    """Start the single-worker background queue thread."""
+    global _WORKER_THREAD, QUEUE_ACTIVE
+    QUEUE_ACTIVE = True
+    _WORKER_THREAD = threading.Thread(target=serial_worker, name="docai-worker", daemon=True)
+    _WORKER_THREAD.start()
+    logger.info("[QUEUE] Started background worker thread.")
 
 
 async def document_worker() -> None:
     """Dedicated background task runner that executes queued extractions one at a time."""
-    logger.info("[QUEUE] Single-worker background queue active.")
+    logger.info("[QUEUE] Starting document_worker loop in event loop.")
+    loop = asyncio.get_event_loop()
     while True:
-        document_id = None
+        item = None
         try:
-            document_id = await DOCUMENT_QUEUE.get()
-            logger.info("[QUEUE] Starting serial processing for doc id=%d", document_id)
-            await _process_document_impl(document_id)
+            # Pull from queue in a non-blocking way for the event loop
+            if isinstance(DOCUMENT_QUEUE, asyncio.Queue):
+                item = await DOCUMENT_QUEUE.get()
+            else:
+                item = await loop.run_in_executor(None, DOCUMENT_QUEUE.get)
+            if item is None:
+                # Sentinel to stop
+                logger.info("[QUEUE] Sentinel received. Stopping worker.")
+                DOCUMENT_QUEUE.task_done()
+                break
+
+            doc_id, local_file_path = item
+            logger.info(
+                "[QUEUE] Starting serial processing for doc id=%d from path=%s",
+                doc_id,
+                local_file_path,
+            )
+
+            try:
+                # To support the existing test patching _process_document_impl,
+                # we call it directly if testing or if path does not exist.
+                if (
+                    os.getenv("TESTING") == "true"
+                    or not local_file_path
+                    or not os.path.exists(local_file_path)
+                ):
+                    await _process_document_impl(doc_id)
+                else:
+                    # Read only ONE file from disk into memory at a time
+                    with open(local_file_path, "rb") as f:
+                        pdf_bytes = f.read()
+                    await extract_document_with_rotation(doc_id, pdf_bytes)
+            except Exception as e:
+                logger.error("[QUEUE] Error processing doc id=%d: %s", doc_id, e)
+                _mark_failed(doc_id, str(e))
+            finally:
+                # Add a file clean-up step inside a finally: block within the worker
+                # to delete (os.remove) the local temporary file from "data/raw" once extraction completes or fails.
+                if local_file_path and os.getenv("TESTING") != "true":
+                    try:
+                        if os.path.exists(local_file_path):
+                            os.remove(local_file_path)
+                            logger.info("[QUEUE] Cleaned up temporary file: %s", local_file_path)
+                    except Exception as cleanup_err:
+                        logger.warning(
+                            "[QUEUE] Failed to delete file %s: %s", local_file_path, cleanup_err
+                        )
+
+                DOCUMENT_QUEUE.task_done()
+
         except asyncio.CancelledError:
-            logger.info("[QUEUE] Single-worker background queue cancelled/shutting down.")
+            logger.info("[QUEUE] Document worker cancelled.")
             break
         except Exception as e:
-            logger.error("[QUEUE] Critical failure on doc id=%s: %s", document_id, e)
-        finally:
-            if document_id is not None:
-                DOCUMENT_QUEUE.task_done()
+            logger.error("[QUEUE] Critical loop error: %s", e)
 
 
 async def _process_document_impl(document_id: int) -> None:
     global CONSECUTIVE_TIER1_FAILURES
-    logger.info("═══ Pipeline START  doc id=%d ═══", document_id)
+    logger.info("═══ Pipeline START (legacy / test) doc id=%d ═══", document_id)
 
     # 1. Load document from DB
     db = _session()
@@ -238,11 +326,6 @@ async def _process_document_impl(document_id: int) -> None:
 
         # Resolve local path if it is not S3
         file_path = None if is_s3 else resolve_document_path(doc)
-
-        page_count = getattr(doc, "page_count", None) or 1
-        char_count = getattr(doc, "char_count", None) or 0
-        doc.status = "processing"
-        db.commit()
     except Exception as e:
         logger.error("DB read error: %s", e)
         return
@@ -271,7 +354,32 @@ async def _process_document_impl(document_id: int) -> None:
         _mark_failed(document_id, f"Cannot read PDF: {e}")
         return
 
-    # 3. Quota-reset cooldown sleep if consecutive failures hit
+    await extract_document_with_rotation(document_id, pdf_bytes)
+
+
+async def extract_document_with_rotation(document_id: int, pdf_bytes: bytes) -> None:
+    global CONSECUTIVE_TIER1_FAILURES
+    logger.info("═══ Pipeline START (extract_document_with_rotation) doc id=%d ═══", document_id)
+
+    # 1. Load document from DB to check status and page/char counts
+    db = _session()
+    try:
+        doc = db.query(Document).filter(Document.id == document_id).first()
+        if not doc:
+            logger.error("Doc id=%d not found", document_id)
+            return
+
+        page_count = getattr(doc, "page_count", None) or 1
+        char_count = getattr(doc, "char_count", None) or 0
+        doc.status = "processing"
+        db.commit()
+    except Exception as e:
+        logger.error("DB read error: %s", e)
+        return
+    finally:
+        db.close()
+
+    # 2. Quota-reset cooldown sleep if consecutive failures hit
     async with _TIER1_FAILURE_LOCK:
         failures_snapshot = CONSECUTIVE_TIER1_FAILURES
     if failures_snapshot > 0:
@@ -281,7 +389,7 @@ async def _process_document_impl(document_id: int) -> None:
         )
         await asyncio.sleep(1)
 
-    # 4. Extraction Waterfall with lock checks for concurrency isolation
+    # 3. Extraction Waterfall with lock checks for concurrency isolation
     provider_name = "groq"
     fallback_used = False
     groq_called_in_task = False

@@ -55,6 +55,8 @@ def init_db() -> None:
         ("users", "files_used_today", "INTEGER DEFAULT 0"),
         ("users", "files_used_month", "INTEGER DEFAULT 0"),
         ("users", "last_reset_date", "TIMESTAMP"),
+        # platform_stats table
+        ("platform_stats", "updated_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
     ]
 
     logger.info("Verifying table schemas and applying self-healing alters if needed...")

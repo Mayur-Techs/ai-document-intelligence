@@ -72,6 +72,39 @@ def upload_file_bytes(
         raise OSError(f"S3 upload error: {e}") from e
 
 
+def upload_file_from_disk(
+    file_path: str, key: str, content_type: str = "application/pdf"
+) -> str | None:
+    """
+    Upload a local file from disk directly to the configured S3 bucket.
+    Returns the s3:// URI (e.g., s3://my-bucket/filename.pdf) on success.
+    """
+    s3_client = _get_s3_client()
+    if not s3_client:
+        logger.warning("S3 client is not enabled. Skipping upload.")
+        return None
+
+    try:
+        logger.info(
+            "Uploading file %s to S3 bucket %s with key %s...",
+            file_path,
+            AWS_STORAGE_BUCKET_NAME,
+            key,
+        )
+        s3_client.upload_file(
+            Filename=file_path,
+            Bucket=AWS_STORAGE_BUCKET_NAME,
+            Key=key,
+            ExtraArgs={"ContentType": content_type},
+        )
+        s3_uri = f"s3://{AWS_STORAGE_BUCKET_NAME}/{key}"
+        logger.info("S3 upload successful: %s", s3_uri)
+        return s3_uri
+    except ClientError as e:
+        logger.error("Failed to upload file from disk to S3: %s", e)
+        raise OSError(f"S3 upload error: {e}") from e
+
+
 def download_file_bytes(key: str) -> bytes:
     """Download and return file bytes from the S3 bucket using the provided key."""
     s3_client = _get_s3_client()

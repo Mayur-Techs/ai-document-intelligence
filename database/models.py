@@ -33,6 +33,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    func,
 )
 from sqlalchemy.orm import DeclarativeBase, relationship
 
@@ -237,7 +238,7 @@ class PlatformStats(Base):
     id = Column(Integer, primary_key=True, default=1)
     total_documents = Column(Integer, default=0)
     confidence_sum = Column(Float, default=0.0)
-    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, server_default=func.now())
 
 
 # ─────────────────────────────────────────────────────────────
